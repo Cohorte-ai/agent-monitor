@@ -1,0 +1,20 @@
+version: "1.0"
+agent_name: my-agent
+
+events:
+  - llm_call
+  - tool_call
+  - guardrail_decision
+  - error
+
+metrics:
+  window_seconds: 300
+  tracked:
+    - event_count
+    - denial_rate
+    - cost_per_minute
+    - avg_latency_ms
+
+alerts:
+  channels:
+    - type: console

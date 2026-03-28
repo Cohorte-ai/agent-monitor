@@ -1,0 +1,83 @@
+version: "1.0"
+agent_name: acme-monitor
+
+events:
+  - llm_call
+  - tool_call
+  - guardrail_decision
+  - error
+  - custom
+
+metrics:
+  window_seconds: 300
+  tracked:
+    - event_count
+    - denial_rate
+    - cost_per_minute
+    - avg_latency_ms
+
+baselines:
+  min_samples: 30
+  z_score_threshold: 3.0
+  save_path: "${MONITOR_DATA_DIR}/baselines.json"
+
+anomaly_rules:
+  - name: high-denial-rate
+    metric: denial_rate
+    agent: "*"
+    z_score_threshold: 3.0
+    severity: high
+    cooldown_seconds: 300
+
+  - name: cost-spike
+    metric: cost_per_minute
+    agent: "*"
+    z_score_threshold: 2.5
+    severity: critical
+    cooldown_seconds: 600
+
+  - name: latency-anomaly
+    metric: avg_latency_ms
+    agent: "*"
+    z_score_threshold: 3.0
+    severity: medium
+    cooldown_seconds: 120
+
+  - name: event-flood
+    metric: event_count
+    agent: "*"
+    z_score_threshold: 4.0
+    severity: high
+    cooldown_seconds: 60
+
+kill_switch:
+  persistence_path: "${MONITOR_DATA_DIR}/kill_state.json"
+  policies:
+    - name: auto-kill-on-high-cost
+      metric: cost_per_minute
+      threshold: 5.0
+      action: kill_agent
+      severity: critical
+
+    - name: emergency-shutdown
+      metric: event_count
+      threshold: 10000
+      action: kill_global
+      severity: critical
+
+alerts:
+  channels:
+    - type: console
+    - type: file
+      path: "${MONITOR_DATA_DIR}/alerts.jsonl"
+    # - type: webhook
+    #   url: "${ALERT_WEBHOOK_URL}"
+    #   method: POST
+    #   headers:
+    #     Authorization: "Bearer ${WEBHOOK_TOKEN}"
+
+compliance:
+  export_formats:
+    - soc2
+    - gdpr
+    - json
