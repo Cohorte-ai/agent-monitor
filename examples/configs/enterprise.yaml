@@ -1,66 +1,81 @@
 version: "1.0"
-agent_name: acme-monitor
+metadata:
+  name: acme-monitor
+  description: Enterprise monitoring for ACME AI agents
+  author: platform-team
 
-events:
-  - llm_call
-  - tool_call
-  - guardrail_decision
-  - error
-  - custom
+agents:
+  sales-agent:
+    enabled: true
+    event_types: [action, denial, error, cost]
+    tags: [production, sales]
+  finance-agent:
+    enabled: true
+    event_types: [action, denial, error, cost, approval_request]
+    tags: [production, finance]
+  support-agent:
+    enabled: true
+    tags: [production, support]
+
+storage:
+  path: "${MONITOR_DATA_DIR:.agent_monitor}/events.jsonl"
+  retention_days: 365
 
 metrics:
-  window_seconds: 300
-  tracked:
-    - event_count
-    - denial_rate
-    - cost_per_minute
-    - avg_latency_ms
+  default_window_seconds: 300
+  max_window_seconds: 3600
 
 baselines:
+  enabled: true
   min_samples: 30
-  z_score_threshold: 3.0
-  save_path: "${MONITOR_DATA_DIR}/baselines.json"
+  metrics:
+    - denial_rate
+    - error_count
+    - cost_per_minute
+    - avg_latency_ms
+  storage_path: "${MONITOR_DATA_DIR:.agent_monitor}/baselines.json"
 
-anomaly_rules:
-  - name: high-denial-rate
-    metric: denial_rate
-    agent: "*"
-    z_score_threshold: 3.0
-    severity: high
-    cooldown_seconds: 300
+anomaly_detection:
+  enabled: true
+  rules:
+    - name: high-denial-rate
+      metric: denial_rate
+      z_threshold: 3.0
+      severity: high
+      cooldown_seconds: 300
 
-  - name: cost-spike
-    metric: cost_per_minute
-    agent: "*"
-    z_score_threshold: 2.5
-    severity: critical
-    cooldown_seconds: 600
+    - name: cost-spike
+      metric: cost_per_minute
+      z_threshold: 2.5
+      severity: critical
+      cooldown_seconds: 600
 
-  - name: latency-anomaly
-    metric: avg_latency_ms
-    agent: "*"
-    z_score_threshold: 3.0
-    severity: medium
-    cooldown_seconds: 120
+    - name: latency-anomaly
+      metric: avg_latency_ms
+      z_threshold: 3.0
+      severity: medium
+      cooldown_seconds: 120
 
-  - name: event-flood
-    metric: event_count
-    agent: "*"
-    z_score_threshold: 4.0
-    severity: high
-    cooldown_seconds: 60
+    - name: event-flood
+      metric: event_count
+      z_threshold: 4.0
+      severity: high
+      cooldown_seconds: 60
 
 kill_switch:
-  persistence_path: "${MONITOR_DATA_DIR}/kill_state.json"
+  enabled: true
+  state_path: "${MONITOR_DATA_DIR:.agent_monitor}/kill_state.json"
   policies:
     - name: auto-kill-on-high-cost
       metric: cost_per_minute
+      operator: ">"
       threshold: 5.0
       action: kill_agent
       severity: critical
 
     - name: emergency-shutdown
       metric: event_count
+      operator: ">"
       threshold: 10000
       action: kill_global
       severity: critical
@@ -69,15 +84,10 @@ alerts:
   channels:
     - type: console
     - type: file
-      path: "${MONITOR_DATA_DIR}/alerts.jsonl"
+      path: "${MONITOR_DATA_DIR:.agent_monitor}/alerts.jsonl"
+      min_severity: medium
     # - type: webhook
     #   url: "${ALERT_WEBHOOK_URL}"
-    #   method: POST
     #   headers:
     #     Authorization: "Bearer ${WEBHOOK_TOKEN}"
-
-compliance:
-  export_formats:
-    - soc2
-    - gdpr
-    - json
+    #   min_severity: high

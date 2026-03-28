@@ -9,63 +9,76 @@ How theaios-agent-monitor works under the hood.
 Everything in agent-monitor starts with an **event** -- something happening in your agentic system that needs to be recorded and analyzed.
 
 ```python
+import time
+
 AgentEvent(
-    event_type="llm_call",               # What kind of event
-    agent="sales-agent",                  # Which agent
-    data={                                # Arbitrary event data
+    timestamp=time.time(),                # Required: epoch seconds
+    agent="sales-agent",                  # Required: which agent
+    event_type="action",                  # Required: what kind of event
+    data={                                # Optional: arbitrary event data
         "model": "gpt-4",
         "prompt_tokens": 150,
         "completion_tokens": 80,
-        "latency_ms": 350.0,
-        "cost": 0.007,
     },
-    timestamp=1234567890.0,               # Optional: defaults to time.time()
+    cost_usd=0.007,                       # Optional: cost in USD
+    latency_ms=350.0,                     # Optional: latency in ms
     session_id="sess-123",                # Optional: for session-level kill
+    user="user@example.com",              # Optional: user identifier
+    tags=["production"],                  # Optional: tags for filtering
 )
 ```
 
-The `data` dict is freeform -- you put whatever fields are relevant. The metrics engine knows how to extract `latency_ms`, `cost`, and `outcome` from standard locations, but everything else is stored as-is for compliance export and auditing.
+Cost and latency are top-level fields on `AgentEvent` (not inside `data`). The `data` dict is freeform -- you put whatever additional fields are relevant. Everything is stored as-is for compliance export and auditing.
 
 ### Event Types
 
-| Event Type | When to record | Typical data fields |
-|-----------|----------------|-------------------|
-| `llm_call` | An LLM API call completes | `model`, `prompt_tokens`, `completion_tokens`, `latency_ms`, `cost` |
-| `tool_call` | An agent calls a tool | `tool`, `latency_ms`, `success` |
-| `guardrail_decision` | A guardrail evaluates an event | `rule`, `outcome` (allow/deny/redact), `severity` |
-| `error` | Something goes wrong | `error_type`, `message` |
-| `custom` | Anything else | Your choice |
+| Event Type | When to record | What it feeds |
+|-----------|----------------|---------------|
+| `action` | An agent performs an action (LLM call, tool call, etc.) | `action_count`, `event_count` |
+| `guardrail_trigger` | A guardrail evaluates (non-denial: allow, redact, log) | `event_count` |
+| `denial` | A guardrail denies a request | `denial_count`, `denial_rate` |
+| `approval_request` | An action requires human approval | `approval_count` |
+| `approval_response` | A human responds to an approval request | `approval_count` |
+| `cost` | An explicit cost record | `cost_total`, `cost_per_minute` |
+| `error` | Something goes wrong | `error_count` |
+| `session_start` | An agent session begins | `event_count` |
+| `session_end` | An agent session ends | `event_count` |
 
 ---
 
 ## The Monitor Pipeline
 
-When `monitor.record(event)` is called, the event flows through six stages:
+When `monitor.record(event)` is called, the event flows through seven stages:
 
 ```
 Event arrives
     |
     +-- 1. Kill Switch Check
-    |     Is this agent killed?
-    |     YES --> reject event, return False
+    |     Is this agent/session killed?
+    |     YES --> silently drop event, return None
     |     NO  --> continue
     |
-    +-- 2. Event Storage
-    |     Append to the EventStore (in-memory, append-only)
+    +-- 2. Agent Track Filter
+    |     Is this agent/event_type tracked by config?
+    |     NO  --> silently drop event
+    |     YES --> continue
     |
-    +-- 3. Metrics Computation
+    +-- 3. Event Storage
+    |     Append to the EventStore (JSONL on disk)
+    |
+    +-- 4. Metrics Computation
     |     Update the MetricsEngine with the new event
     |     Compute rolling window metrics
     |
-    +-- 4. Baseline Update
+    +-- 5. Baseline Update
     |     Feed current metric values into the BaselineTracker
     |     Update mean and stddev via Welford's algorithm
     |
-    +-- 5. Anomaly Detection
+    +-- 6. Anomaly Detection
     |     For each anomaly rule, compute z-score against baseline
     |     If z-score > threshold --> trigger alert
     |
-    +-- 6. Kill Switch Evaluation
+    +-- 7. Kill Switch Evaluation
           For each kill policy, check metric against threshold
           If exceeded --> kill the agent automatically
 ```
@@ -76,16 +89,21 @@ This entire pipeline runs synchronously and in-process. No external calls. No ba
 
 ## Metrics Engine
 
-The metrics engine computes four real-time metrics over a configurable rolling window:
+The metrics engine computes rolling-window metrics for each agent independently. Key metrics:
 
 | Metric | How it's computed | Source field |
 |--------|------------------|-------------|
 | `event_count` | Count of events in the window | -- |
-| `denial_rate` | Fraction of `guardrail_decision` events with `outcome=deny` | `data.outcome` |
-| `cost_per_minute` | Sum of `cost` fields divided by window duration in minutes | `data.cost` |
-| `avg_latency_ms` | Mean of `latency_ms` fields for events in the window | `data.latency_ms` |
+| `action_count` | Count of `action` events | `event_type` |
+| `denial_count` | Count of `denial` events | `event_type` |
+| `denial_rate` | `denial_count / (action_count + denial_count)` | `event_type` |
+| `approval_count` | Count of approval events | `event_type` |
+| `error_count` | Count of `error` events | `event_type` |
+| `cost_total` | Sum of `cost_usd` in the window | `cost_usd` |
+| `cost_per_minute` | `cost_total / (window_seconds / 60)` | `cost_usd` |
+| `avg_latency_ms` | Mean of `latency_ms` for events with latency | `latency_ms` |
 
-The rolling window is configured by `metrics.window_seconds` (default: 300 seconds). Events older than the window are excluded from the snapshot.
+The rolling window is configured by `metrics.default_window_seconds` (default: 300 seconds). Events older than the window are automatically excluded.
 
 ### MetricSnapshot
 
@@ -93,11 +111,18 @@ The rolling window is configured by `metrics.window_seconds` (default: 300 secon
 @dataclass
 class MetricSnapshot:
     agent: str
+    window_seconds: int
+    timestamp: float
     event_count: int = 0
+    action_count: int = 0
+    denial_count: int = 0
     denial_rate: float = 0.0
+    approval_count: int = 0
+    approval_rate: float = 0.0
+    error_count: int = 0
+    cost_total: float = 0.0
     cost_per_minute: float = 0.0
     avg_latency_ms: float = 0.0
-    timestamp: float = ...
 ```
 
 ---
@@ -127,7 +152,7 @@ z = (value - mean) / stddev
 A z-score of 3.0 means the value is 3 standard deviations above the mean -- a strong signal of anomalous behavior.
 
 !!! tip "Min samples"
-    Baselines require `min_samples` data points before z-scores are computed. This prevents false alerts during cold start. Default: 20 samples.
+    Baselines require `min_samples` data points before z-scores are computed. This prevents false alerts during cold start. Default: 30 samples.
 
 ---
 
@@ -136,19 +161,19 @@ A z-score of 3.0 means the value is 3 standard deviations above the mean -- a st
 Anomaly rules define when to trigger alerts. Each rule specifies:
 
 - **metric** -- which metric to monitor
-- **agent** -- which agent (or `*` for all)
-- **z_score_threshold** -- how many standard deviations before alerting
+- **z_threshold** -- how many standard deviations before alerting
 - **severity** -- alert severity (critical, high, medium, low)
 - **cooldown_seconds** -- minimum time between repeated alerts for the same rule
 
 ```yaml
-anomaly_rules:
-  - name: cost-spike
-    metric: cost_per_minute
-    agent: "*"
-    z_score_threshold: 2.5
-    severity: critical
-    cooldown_seconds: 600
+anomaly_detection:
+  enabled: true
+  rules:
+    - name: cost-spike
+      metric: cost_per_minute
+      z_threshold: 2.5
+      severity: critical
+      cooldown_seconds: 600
 ```
 
 When a metric's z-score exceeds the threshold, the detector:
@@ -171,7 +196,7 @@ Kill switches are the most important safety mechanism. They provide three levels
 | Session | `kill_session(session_id)` | Blocks all events for a specific session |
 | Global | `kill_global(reason)` | Blocks all events for all agents |
 
-When an agent is killed, `monitor.record()` returns `False` and the event is not processed. This is the fastest possible circuit breaker -- it runs before any metrics computation.
+When an agent is killed, `monitor.record()` silently drops the event (returns `None`). The event is not processed. This is the fastest possible circuit breaker -- it runs before any metrics computation.
 
 ### Auto-Kill Policies
 
@@ -179,9 +204,11 @@ Kill policies evaluate after every metric snapshot. If a metric exceeds the thre
 
 ```yaml
 kill_switch:
+  enabled: true
   policies:
     - name: auto-kill-on-high-cost
       metric: cost_per_minute
+      operator: ">"
       threshold: 5.0
       action: kill_agent
       severity: critical
@@ -227,9 +254,9 @@ The compliance exporter generates reports from the event store. Three formats ar
 
 | Format | Purpose | Fields |
 |--------|---------|--------|
-| `soc2` | SOC 2 Type II audits | Events, summary, controls, generated_at |
-| `gdpr` | GDPR data processing records | Events, agents (data subjects), processing activities |
-| `json` | Generic machine-readable export | Events, summary |
+| `soc2` | SOC 2 Type II audits | Events, summary, access controls, guardrail enforcement |
+| `gdpr` | GDPR data processing records | Events, data subjects, processing activities |
+| `json` | Generic machine-readable export | Events, filters, total count |
 
 Reports can be filtered by agent, time range, and event type.
 

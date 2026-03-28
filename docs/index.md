@@ -18,10 +18,10 @@ theaios-agent-monitor is built for these scenarios. Traditional observability to
 ## What It Does
 
 ```
-Agent event (llm_call, tool_call, guardrail_decision, error, custom)
+Agent event (action, guardrail_trigger, denial, approval_request, cost, error, ...)
     |
     v
-EventStore (append-only log)
+EventStore (append-only JSONL log)
     |
     v
 MetricsEngine (rolling window: event_count, denial_rate, cost/min, latency)
@@ -53,16 +53,18 @@ pip install theaios-agent-monitor
 ```yaml
 # monitor.yaml
 version: "1.0"
-agent_name: my-agent
+metadata:
+  name: my-monitor
 
 metrics:
-  window_seconds: 300
-  tracked: [event_count, denial_rate, cost_per_minute, avg_latency_ms]
+  default_window_seconds: 300
 
 kill_switch:
+  enabled: true
   policies:
     - name: auto-kill-on-high-cost
       metric: cost_per_minute
+      operator: ">"
       threshold: 5.0
       action: kill_agent
       severity: critical
@@ -73,13 +75,15 @@ alerts:
 ```
 
 ```python
+import time
 from theaios.agent_monitor import Monitor, load_config, AgentEvent
 
 monitor = Monitor(load_config("monitor.yaml"))
 
 monitor.record(AgentEvent(
-    event_type="llm_call", agent="sales-agent",
-    data={"model": "gpt-4", "latency_ms": 350.0, "cost": 0.007},
+    timestamp=time.time(), event_type="action", agent="sales-agent",
+    cost_usd=0.007, latency_ms=350.0,
+    data={"model": "gpt-4"},
 ))
 
 snap = monitor.get_metrics("sales-agent")
@@ -97,8 +101,9 @@ print(f"Events: {snap.event_count}, Cost/min: ${snap.cost_per_minute:.4f}")
 | [Kill Switches](kill-switches.md) | Kill/revive, auto-kill policies, persistence |
 | [Compliance](compliance.md) | SOC 2, GDPR, JSON export |
 | [Integration](integration.md) | Guardrails adapter, OpenTelemetry, custom adapters |
-| [CLI Reference](cli.md) | `agent-monitor validate`, `record`, `metrics`, `kill`, `export` |
+| [CLI Reference](cli.md) | `agent-monitor version`, `validate`, `inspect`, `status`, `events`, `kill`, `revive`, `export` |
 | [Python API](api-reference.md) | `Monitor`, `load_config`, `AgentEvent`, all data types |
+| [AI Config Generator](ai-config-generator.md) | Copy-paste prompts for generating monitor.yaml with any LLM |
 
 ## Part of the theaios Ecosystem
 

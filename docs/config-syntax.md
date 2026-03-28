@@ -1,6 +1,6 @@
 # Configuration Reference
 
-A monitor configuration is a single YAML file that defines event types, metrics, baselines, anomaly rules, kill switch policies, alert channels, and compliance export settings.
+A monitor configuration is a single YAML file that defines agent tracking, metrics, baselines, anomaly rules, kill switch policies, alert channels, and storage settings.
 
 This page is the complete reference.
 
@@ -12,17 +12,18 @@ Every config file has these top-level sections:
 
 ```yaml
 version: "1.0"              # Required. Always "1.0" for now.
-agent_name: my-agent         # Required. Default agent identifier.
-events:                      # Optional. Accepted event types.
-metrics:                     # Optional. Metrics computation settings.
+metadata:                    # Optional. Name, description, author.
+variables:                   # Optional. Shared key-value pairs.
+agents:                      # Optional. Per-agent tracking config.
+storage:                     # Optional. Event storage settings.
+metrics:                     # Optional. Metrics engine settings.
 baselines:                   # Optional. Baseline tracking settings.
-anomaly_rules:               # Optional. Anomaly detection rules.
+anomaly_detection:           # Optional. Anomaly detection rules.
 kill_switch:                 # Optional. Kill switch policies.
-alerts:                      # Required. Alert channel configuration.
-compliance:                  # Optional. Compliance export settings.
+alerts:                      # Optional. Alert channel configuration.
 ```
 
-Only `version`, `agent_name`, and `alerts` are required.
+Only `version` is strictly required. All other sections use sensible defaults.
 
 ---
 
@@ -40,42 +41,90 @@ Always `"1.0"` for the current release. The engine rejects unknown versions.
 
 ---
 
-## Agent Name
+## Metadata
 
 ```yaml
-agent_name: my-agent
+metadata:
+  name: my-monitor
+  description: Production agent monitoring
+  author: ops-team
 ```
 
-The default agent identifier. Used when events don't specify an agent and for config identification.
+Optional metadata for documentation and identification.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `agent_name` | string | **Yes** | Default agent name. Must be non-empty. |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `metadata.name` | string | `""` | Monitor name. |
+| `metadata.description` | string | `""` | Human-readable description. |
+| `metadata.author` | string | `""` | Config author or team. |
 
 ---
 
-## Events
+## Variables
 
 ```yaml
-events:
-  - llm_call
-  - tool_call
-  - guardrail_decision
-  - error
-  - custom
+variables:
+  alert_webhook: "https://hooks.slack.com/services/xxx"
+  cost_threshold: 5.0
 ```
 
-List of accepted event types. Events with types not in this list can still be recorded (the list is advisory, not enforcing).
+Key-value pairs available for reference. Variables support `${ENV_VAR}` interpolation.
+
+---
+
+## Agents
+
+```yaml
+agents:
+  sales-agent:
+    enabled: true
+    event_types:
+      - action
+      - denial
+      - error
+    tags:
+      - production
+      - sales
+  finance-agent:
+    enabled: true
+```
+
+Per-agent tracking configuration. If no agents are configured, all agents are tracked by default.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `agents.<name>.enabled` | bool | `true` | Whether to track this agent. |
+| `agents.<name>.event_types` | list | `[]` (all) | Only track these event types. Empty = track all. |
+| `agents.<name>.tags` | list | `[]` | Tags for this agent. |
 
 ### Valid Event Types
 
 | Value | Description |
 |-------|-------------|
-| `llm_call` | An LLM API call |
-| `tool_call` | An agent tool invocation |
-| `guardrail_decision` | A guardrail evaluation result |
+| `action` | An agent action (LLM call, tool call, etc.) |
+| `guardrail_trigger` | A guardrail evaluation (non-denial) |
+| `denial` | A guardrail denial |
+| `approval_request` | An action requiring human approval |
+| `approval_response` | A human approval response |
+| `cost` | A cost record |
 | `error` | An error or exception |
-| `custom` | Any user-defined event |
+| `session_start` | Session start |
+| `session_end` | Session end |
+
+---
+
+## Storage
+
+```yaml
+storage:
+  path: .agent_monitor/events.jsonl
+  retention_days: 90
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `storage.path` | string | `.agent_monitor/events.jsonl` | Path to the JSONL event store. |
+| `storage.retention_days` | int | `90` | Days to retain events. Must be >= 1. |
 
 ---
 
@@ -83,27 +132,31 @@ List of accepted event types. Events with types not in this list can still be re
 
 ```yaml
 metrics:
-  window_seconds: 300
-  tracked:
-    - event_count
-    - denial_rate
-    - cost_per_minute
-    - avg_latency_ms
+  default_window_seconds: 300
+  max_window_seconds: 3600
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `window_seconds` | int | `300` | Rolling window size in seconds for metric computation. |
-| `tracked` | list | `["event_count"]` | Which metrics to compute. |
+| `metrics.default_window_seconds` | int | `300` | Default rolling window size in seconds. |
+| `metrics.max_window_seconds` | int | `3600` | Maximum allowed window size. |
 
 ### Valid Metrics
 
-| Value | Description | Source |
-|-------|-------------|--------|
+These are the metrics computed by the engine:
+
+| Metric | Description | Source |
+|--------|-------------|--------|
 | `event_count` | Total events in window | -- |
-| `denial_rate` | Fraction of guardrail decisions that are denials | `data.outcome` |
-| `cost_per_minute` | Total cost divided by window minutes | `data.cost` |
-| `avg_latency_ms` | Mean latency in milliseconds | `data.latency_ms` |
+| `action_count` | Count of `action` events | `event_type` |
+| `denial_count` | Count of `denial` events | `event_type` |
+| `denial_rate` | Fraction of action+denial events that are denials | `event_type` |
+| `approval_count` | Count of approval events | `event_type` |
+| `approval_rate` | Fraction of events that are approvals | `event_type` |
+| `error_count` | Count of `error` events | `event_type` |
+| `cost_total` | Sum of `cost_usd` in window | `cost_usd` |
+| `cost_per_minute` | `cost_total / (window_seconds / 60)` | `cost_usd` |
+| `avg_latency_ms` | Mean latency for events with latency | `latency_ms` |
 
 ---
 
@@ -111,49 +164,62 @@ metrics:
 
 ```yaml
 baselines:
-  min_samples: 20
-  z_score_threshold: 3.0
-  save_path: "${MONITOR_DATA_DIR}/baselines.json"
+  enabled: true
+  min_samples: 30
+  metrics:
+    - denial_rate
+    - error_count
+    - cost_per_minute
+    - avg_latency_ms
+  storage_path: .agent_monitor/baselines.json
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `min_samples` | int | `20` | Minimum data points before z-scores are computed. |
-| `z_score_threshold` | float | `3.0` | Default z-score threshold (overridden by individual anomaly rules). |
-| `save_path` | string | `""` | Path to persist baseline state. Empty = no persistence. |
+| `baselines.enabled` | bool | `true` | Enable baseline tracking. |
+| `baselines.min_samples` | int | `30` | Minimum data points before z-scores are computed. |
+| `baselines.metrics` | list | `["denial_rate", "error_count", "cost_per_minute", "avg_latency_ms"]` | Which metrics to track baselines for. |
+| `baselines.storage_path` | string | `.agent_monitor/baselines.json` | Path to persist baseline state. |
 
 ---
 
-## Anomaly Rules
+## Anomaly Detection
 
 ```yaml
-anomaly_rules:
-  - name: high-denial-rate
-    metric: denial_rate
-    agent: "*"
-    z_score_threshold: 3.0
-    severity: high
-    cooldown_seconds: 300
+anomaly_detection:
+  enabled: true
+  rules:
+    - name: high-denial-rate
+      metric: denial_rate
+      z_threshold: 3.0
+      severity: high
+      cooldown_seconds: 300
 ```
 
-Each rule is an object with:
+### Top-Level Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `anomaly_detection.enabled` | bool | `true` | Enable anomaly detection. |
+| `anomaly_detection.rules` | list | `[]` | Anomaly detection rules. |
+
+### Rule Fields
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | **Yes** | -- | Unique rule identifier. |
-| `metric` | string | **Yes** | -- | Which metric to monitor. Must be a valid metric name. |
-| `agent` | string | **Yes** | -- | Agent to match. `"*"` matches all agents. |
-| `z_score_threshold` | float | **Yes** | -- | Z-score threshold for triggering. |
-| `severity` | string | **Yes** | -- | Alert severity: `critical`, `high`, `medium`, `low`. |
+| `metric` | string | **Yes** | -- | Which metric to monitor. |
+| `z_threshold` | float | No | `3.0` | Z-score threshold for triggering. |
+| `severity` | string | No | `"high"` | Alert severity: `critical`, `high`, `medium`, `low`. |
 | `cooldown_seconds` | int | No | `300` | Minimum seconds between repeated alerts. |
+| `condition` | string | No | `""` | Optional condition expression. |
 
 ### How Rules Are Evaluated
 
 1. For each agent's metric snapshot, iterate all anomaly rules
-2. Skip rules where `agent` doesn't match (unless `agent: "*"`)
-3. Compute z-score for the rule's metric against the baseline
-4. If z-score exceeds `z_score_threshold` and cooldown has elapsed, trigger an alert
-5. Record the alert time for cooldown tracking
+2. Compute z-score for the rule's metric against the baseline
+3. If z-score exceeds `z_threshold` and cooldown has elapsed, trigger an alert
+4. Record the alert time for cooldown tracking
 
 ---
 
@@ -161,10 +227,12 @@ Each rule is an object with:
 
 ```yaml
 kill_switch:
-  persistence_path: "${MONITOR_DATA_DIR}/kill_state.json"
+  enabled: true
+  state_path: .agent_monitor/kill_state.json
   policies:
     - name: auto-kill-on-high-cost
       metric: cost_per_minute
+      operator: ">"
       threshold: 5.0
       action: kill_agent
       severity: critical
@@ -174,18 +242,21 @@ kill_switch:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `persistence_path` | string | `""` | Path to persist kill state. Empty = no persistence. |
-| `policies` | list | `[]` | Auto-kill policies. |
+| `kill_switch.enabled` | bool | `true` | Enable kill switch system. |
+| `kill_switch.state_path` | string | `.agent_monitor/kill_state.json` | Path to persist kill state. |
+| `kill_switch.policies` | list | `[]` | Auto-kill policies. |
 
 ### Policy Fields
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | **Yes** | Unique policy identifier. |
-| `metric` | string | **Yes** | Which metric to evaluate. |
-| `threshold` | float | **Yes** | Metric value that triggers the kill. |
-| `action` | string | **Yes** | What to do: `kill_agent`, `kill_session`, `kill_global`. |
-| `severity` | string | **Yes** | Alert severity for the kill event. |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | **Yes** | -- | Unique policy identifier. |
+| `metric` | string | **Yes** | -- | Which metric to evaluate. |
+| `operator` | string | **Yes** | -- | Comparison: `>`, `<`, `>=`, `<=`, `==`. |
+| `threshold` | float | **Yes** | -- | Metric value that triggers the kill. |
+| `action` | string | No | `"kill_agent"` | What to do: `kill_agent`, `kill_session`, `kill_global`. |
+| `severity` | string | No | `"critical"` | Alert severity for the kill event. |
+| `message` | string | No | `""` | Custom message for the kill alert. |
 
 ### Valid Kill Actions
 
@@ -204,12 +275,13 @@ alerts:
   channels:
     - type: console
     - type: file
-      path: "${MONITOR_DATA_DIR}/alerts.jsonl"
+      path: .agent_monitor/alerts.jsonl
+      min_severity: medium
     - type: webhook
       url: "${ALERT_WEBHOOK_URL}"
-      method: POST
       headers:
         Authorization: "Bearer ${WEBHOOK_TOKEN}"
+      min_severity: high
 ```
 
 ### Channel Types
@@ -220,47 +292,26 @@ alerts:
 | `file` | `path` | Append JSONL to a file |
 | `webhook` | `url` | HTTP POST to a webhook endpoint |
 
-### Webhook Channel Fields
+### Channel Fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `url` | string | **(required)** | Webhook endpoint URL. |
-| `method` | string | `"POST"` | HTTP method. |
-| `headers` | dict | `{}` | HTTP headers. Supports `${ENV_VAR}` interpolation. |
-
----
-
-## Compliance
-
-```yaml
-compliance:
-  export_formats:
-    - soc2
-    - gdpr
-    - json
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `export_formats` | list | `["json"]` | Available export formats. |
-
-### Valid Export Formats
-
-| Value | Description |
-|-------|-------------|
-| `soc2` | SOC 2 Type II audit format |
-| `gdpr` | GDPR data processing records |
-| `json` | Generic JSON export |
+| `type` | string | **(required)** | Channel type: `console`, `file`, `webhook`. |
+| `enabled` | bool | `true` | Enable this channel. |
+| `path` | string | `""` | File path (for `file` channels). |
+| `url` | string | `""` | Webhook endpoint URL (for `webhook` channels). |
+| `min_severity` | string | `"low"` | Minimum severity to dispatch. |
+| `headers` | dict | `{}` | HTTP headers (for `webhook` channels). Supports `${ENV_VAR}` interpolation. |
 
 ---
 
 ## Environment Variable Interpolation
 
-All string values in the config support `${ENV_VAR}` interpolation:
+All string values in the config support `${ENV_VAR}` and `${ENV_VAR:default}` interpolation:
 
 ```yaml
 kill_switch:
-  persistence_path: "${MONITOR_DATA_DIR}/kill_state.json"
+  state_path: "${MONITOR_DATA_DIR:.agent_monitor}/kill_state.json"
 alerts:
   channels:
     - type: webhook
@@ -269,7 +320,7 @@ alerts:
         Authorization: "Bearer ${WEBHOOK_TOKEN}"
 ```
 
-If the environment variable is not set, the placeholder is left as-is (no error, no expansion).
+If the environment variable is not set and no default is provided, the placeholder is left as-is (no error, no expansion).
 
 ---
 
@@ -277,60 +328,73 @@ If the environment variable is not set, the placeholder is left as-is (no error,
 
 ```yaml
 version: "1.0"
-agent_name: acme-monitor
+metadata:
+  name: acme-monitor
+  description: Production monitoring for ACME AI agents
+  author: platform-team
 
-events:
-  - llm_call
-  - tool_call
-  - guardrail_decision
-  - error
+agents:
+  sales-agent:
+    enabled: true
+    event_types: [action, denial, error, cost]
+    tags: [production, sales]
+  finance-agent:
+    enabled: true
+    tags: [production, finance]
+
+storage:
+  path: /var/lib/agent-monitor/events.jsonl
+  retention_days: 365
 
 metrics:
-  window_seconds: 300
-  tracked:
-    - event_count
-    - denial_rate
-    - cost_per_minute
-    - avg_latency_ms
+  default_window_seconds: 300
+  max_window_seconds: 3600
 
 baselines:
+  enabled: true
   min_samples: 30
-  z_score_threshold: 3.0
-  save_path: /var/lib/agent-monitor/baselines.json
+  metrics:
+    - denial_rate
+    - error_count
+    - cost_per_minute
+    - avg_latency_ms
+  storage_path: /var/lib/agent-monitor/baselines.json
 
-anomaly_rules:
-  - name: high-denial-rate
-    metric: denial_rate
-    agent: "*"
-    z_score_threshold: 3.0
-    severity: high
-    cooldown_seconds: 300
+anomaly_detection:
+  enabled: true
+  rules:
+    - name: high-denial-rate
+      metric: denial_rate
+      z_threshold: 3.0
+      severity: high
+      cooldown_seconds: 300
 
-  - name: cost-spike
-    metric: cost_per_minute
-    agent: "*"
-    z_score_threshold: 2.5
-    severity: critical
-    cooldown_seconds: 600
+    - name: cost-spike
+      metric: cost_per_minute
+      z_threshold: 2.5
+      severity: critical
+      cooldown_seconds: 600
 
-  - name: latency-anomaly
-    metric: avg_latency_ms
-    agent: "*"
-    z_score_threshold: 3.0
-    severity: medium
-    cooldown_seconds: 120
+    - name: latency-anomaly
+      metric: avg_latency_ms
+      z_threshold: 3.0
+      severity: medium
+      cooldown_seconds: 120
 
 kill_switch:
-  persistence_path: /var/lib/agent-monitor/kill_state.json
+  enabled: true
+  state_path: /var/lib/agent-monitor/kill_state.json
   policies:
     - name: auto-kill-on-high-cost
       metric: cost_per_minute
+      operator: ">"
       threshold: 5.0
       action: kill_agent
       severity: critical
 
     - name: emergency-shutdown
       metric: event_count
+      operator: ">"
       threshold: 10000
       action: kill_global
       severity: critical
@@ -340,16 +404,12 @@ alerts:
     - type: console
     - type: file
       path: /var/log/agent-monitor/alerts.jsonl
+      min_severity: medium
     - type: webhook
       url: https://hooks.slack.com/services/xxx
       headers:
         Content-Type: "application/json"
-
-compliance:
-  export_formats:
-    - soc2
-    - gdpr
-    - json
+      min_severity: high
 ```
 
 ---
@@ -359,15 +419,16 @@ compliance:
 Always validate your config before deploying:
 
 ```bash
-agent-monitor validate --config monitor.yaml
+agent-monitor -c monitor.yaml validate
 ```
 
 The validator checks:
 
 - Version is supported (`"1.0"`)
-- `agent_name` is non-empty
-- All event types are valid
-- All metrics are valid
-- Anomaly rule names are unique and reference valid metrics/severities
-- Kill policy actions are valid
-- Alert channels have required fields
+- All event types in agent configs are valid
+- Storage retention_days >= 1
+- Metrics window sizes are valid
+- Baselines min_samples >= 1
+- Anomaly rule names are unique, reference valid severities
+- Kill policy operators, actions, and severities are valid
+- Alert channels have required fields and valid types/severities

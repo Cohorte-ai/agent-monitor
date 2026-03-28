@@ -1,19 +1,35 @@
 version: "1.0"
-agent_name: my-agent
+metadata:
+  name: basic-monitor
+  description: Basic agent monitoring config for quickstart examples
+  author: theaios
 
-events:
-  - llm_call
-  - tool_call
-  - guardrail_decision
-  - error
+storage:
+  path: .agent_monitor/events.jsonl
+  retention_days: 90
 
 metrics:
-  window_seconds: 300
-  tracked:
-    - event_count
+  default_window_seconds: 300
+  max_window_seconds: 3600
+
+baselines:
+  enabled: true
+  min_samples: 30
+  metrics:
     - denial_rate
+    - error_count
     - cost_per_minute
     - avg_latency_ms
+
+kill_switch:
+  enabled: true
+  policies:
+    - name: auto-kill-on-high-cost
+      metric: cost_per_minute
+      operator: ">"
+      threshold: 5.0
+      action: kill_agent
+      severity: critical
 
 alerts:
   channels:

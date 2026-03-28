@@ -62,28 +62,43 @@ monitor.kill_global(reason="Emergency shutdown")
 ### Check Status
 
 ```python
-monitor.is_killed("sales-agent")        # True/False
-monitor.is_session_killed("sess-123")   # True/False
+monitor.is_killed("sales-agent")                          # True/False
+monitor.is_killed("sales-agent", session_id="sess-123")   # Also checks session
 ```
 
 ### Revive
 
 ```python
 # Revive a specific agent
-monitor.revive_agent("sales-agent")
+monitor.revive(agent="sales-agent")
 
-# Revive globally
+# Revive a specific session
+monitor.revive(session_id="sess-abc-123")
+
+# Deactivate global kill
 monitor.revive_global()
 ```
 
 ### CLI
 
 ```bash
-# Kill
-agent-monitor kill --config monitor.yaml --agent sales-agent --reason "Cost spike"
+# Kill an agent
+agent-monitor -c monitor.yaml kill sales-agent --reason "Cost spike"
 
-# Revive
-agent-monitor revive --config monitor.yaml --agent sales-agent
+# Kill a session
+agent-monitor -c monitor.yaml kill sess-abc-123 --session --reason "Suspicious"
+
+# Global kill
+agent-monitor -c monitor.yaml kill ALL --global-kill --reason "Emergency"
+
+# Revive an agent
+agent-monitor -c monitor.yaml revive sales-agent
+
+# Revive a session
+agent-monitor -c monitor.yaml revive sess-abc-123 --session
+
+# Deactivate global kill
+agent-monitor -c monitor.yaml revive ALL --global-revive
 ```
 
 ---
@@ -94,15 +109,18 @@ Auto-kill policies trigger automatically when a metric exceeds a threshold. No h
 
 ```yaml
 kill_switch:
+  enabled: true
   policies:
     - name: auto-kill-on-high-cost
       metric: cost_per_minute
+      operator: ">"
       threshold: 5.0
       action: kill_agent
       severity: critical
 
     - name: emergency-shutdown
       metric: event_count
+      operator: ">"
       threshold: 10000
       action: kill_global
       severity: critical
@@ -114,15 +132,17 @@ kill_switch:
 |-------|------|-------------|
 | `name` | string | Unique policy identifier |
 | `metric` | string | Which metric to evaluate |
+| `operator` | string | Comparison: `>`, `<`, `>=`, `<=`, `==` |
 | `threshold` | float | Value that triggers the kill |
 | `action` | string | `kill_agent`, `kill_session`, or `kill_global` |
 | `severity` | string | Alert severity for the kill event |
+| `message` | string | Optional custom message |
 
 ### How Policies Are Evaluated
 
 After every metric snapshot:
 
-1. For each policy, check if the metric value exceeds the threshold
+1. For each policy, check if `metric <operator> threshold` is true
 2. If yes, execute the action (kill agent/session/global)
 3. Dispatch a kill alert to all configured channels
 
@@ -130,9 +150,11 @@ After every metric snapshot:
 
 ```yaml
 kill_switch:
+  enabled: true
   policies:
     - name: cost-guard
       metric: cost_per_minute
+      operator: ">"
       threshold: 1.0
       action: kill_agent
       severity: critical
@@ -144,9 +166,11 @@ If any agent's cost exceeds $1.00/minute, that agent is automatically killed. Ot
 
 ```yaml
 kill_switch:
+  enabled: true
   policies:
     - name: flood-protection
       metric: event_count
+      operator: ">"
       threshold: 50000
       action: kill_global
       severity: critical
@@ -162,16 +186,16 @@ Kill state can survive restarts:
 
 ```yaml
 kill_switch:
-  persistence_path: "/var/lib/agent-monitor/kill_state.json"
+  state_path: /var/lib/agent-monitor/kill_state.json
 ```
 
-When configured, the kill switch saves its state to disk after every kill/revive operation. On startup, the monitor loads the saved state.
+When configured, the kill switch saves its state to disk after every kill/revive operation (via `save()`). On startup, call `load()` to restore saved state.
 
 This means:
 
 - An auto-killed agent stays killed after a restart
 - A manually killed agent stays killed after a restart
-- Only an explicit `revive_agent()` or `revive_global()` restores the agent
+- Only an explicit `revive(agent=...)` or `revive_global()` restores the agent
 
 ---
 
@@ -181,19 +205,20 @@ When `monitor.record()` is called for a killed agent:
 
 1. The kill switch is checked **first**, before any other processing
 2. If the agent is killed, the event is **not** stored, metrics are **not** updated
-3. `record()` returns `False` (or `None`)
+3. `record()` returns `None` (it always returns `None`)
 
-This is the fastest possible circuit breaker -- no metrics computation, no baseline updates, no anomaly detection. Just a dictionary lookup.
+This is the fastest possible circuit breaker -- no metrics computation, no baseline updates, no anomaly detection. Just a set lookup (O(1)).
 
 ---
 
 ## Kill State Inspection
 
 ```python
-state = monitor.get_kill_state()
-print(state.killed_agents)    # {"sales-agent": "Cost spike detected"}
+state = monitor.kill_switch_engine.get_state()
+print(state.killed_agents)    # {"sales-agent"}
 print(state.killed_sessions)  # {"sess-abc-123"}
 print(state.global_kill)      # False
+print(state.reasons)          # {"agent:sales-agent": "Cost spike detected"}
 ```
 
 ---

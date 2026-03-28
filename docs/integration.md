@@ -9,6 +9,7 @@ theaios-agent-monitor works with any agentic platform. This page shows how to in
 Record events directly from your agent code.
 
 ```python
+import time
 from theaios.agent_monitor import Monitor, load_config, AgentEvent
 
 monitor = Monitor(load_config("monitor.yaml"))
@@ -20,13 +21,12 @@ def call_llm(prompt: str, agent: str) -> str:
     elapsed = (time.time() - start) * 1000
 
     monitor.record(AgentEvent(
-        event_type="llm_call",
+        timestamp=time.time(),
+        event_type="action",
         agent=agent,
-        data={
-            "model": "gpt-4",
-            "latency_ms": elapsed,
-            "cost": response.usage.total_cost,
-        },
+        cost_usd=response.usage.total_cost,
+        latency_ms=elapsed,
+        data={"model": "gpt-4"},
     ))
 
     if monitor.is_killed(agent):
@@ -39,7 +39,7 @@ def call_llm(prompt: str, agent: str) -> str:
 
 ## Level 2: Guardrails Adapter
 
-If you use [theaios-guardrails](https://github.com/Cohorte-ai/guardrails), the `GuardrailsMonitor` adapter automatically records every guardrail decision.
+If you use [theaios-guardrails](https://github.com/Cohorte-ai/guardrails), the `GuardrailsMonitor` adapter automatically records every guardrail evaluation as an agent event.
 
 ```bash
 pip install theaios-agent-monitor[guardrails]
@@ -48,26 +48,35 @@ pip install theaios-agent-monitor[guardrails]
 ```python
 from theaios.agent_monitor import Monitor, load_config
 from theaios.agent_monitor.adapters.guardrails import GuardrailsMonitor
-from theaios.guardrails import Engine, load_policy, GuardEvent
+from theaios.guardrails import Engine, load_policy
 
 # Set up monitor
 monitor = Monitor(load_config("monitor.yaml"))
-gm = GuardrailsMonitor(monitor=monitor)
 
-# Set up guardrails
+# Set up guardrails engine
 engine = Engine(load_policy("guardrails.yaml"))
 
-# Evaluate and record in one step
+# Wrap the engine with the monitor adapter
+gm = GuardrailsMonitor(engine=engine, monitor=monitor)
+
+# Use gm.evaluate() instead of engine.evaluate()
+# The adapter auto-records the decision as an AgentEvent
 event = GuardEvent(scope="input", agent="sales-agent", data={"content": user_message})
-decision = engine.evaluate(event)
-gm.record_decision(agent="sales-agent", decision=decision)
+decision = gm.evaluate(event)
 
 # Metrics now include denial_rate from guardrail decisions
 snap = monitor.get_metrics("sales-agent")
 print(f"Denial rate: {snap.denial_rate:.1%}")
 ```
 
-The adapter extracts `outcome`, `rule`, and `severity` from the guardrail decision and records a `guardrail_decision` event.
+The adapter maps guardrails outcomes to event types:
+
+| Guardrails outcome | Agent event type |
+|-------------------|-----------------|
+| `deny` | `denial` |
+| `require_approval` | `approval_request` |
+| `allow`, `log`, `redact` | `action` |
+| Other | `guardrail_trigger` |
 
 ---
 
@@ -108,6 +117,7 @@ Build your own adapter for any platform. The pattern is:
 2. After each relevant operation, call `monitor.record()` with the appropriate event
 
 ```python
+import time
 from theaios.agent_monitor import Monitor, AgentEvent
 
 
@@ -117,28 +127,25 @@ class MyPlatformMonitor:
 
     def on_llm_response(self, agent: str, response: dict) -> None:
         self.monitor.record(AgentEvent(
-            event_type="llm_call",
+            timestamp=time.time(),
+            event_type="action",
             agent=agent,
-            data={
-                "model": response["model"],
-                "latency_ms": response["latency_ms"],
-                "cost": response["cost"],
-            },
+            cost_usd=response["cost"],
+            latency_ms=response["latency_ms"],
+            data={"model": response["model"]},
         ))
 
-    def on_tool_call(self, agent: str, tool: str, result: dict) -> None:
+    def on_denial(self, agent: str, rule: str, severity: str) -> None:
         self.monitor.record(AgentEvent(
-            event_type="tool_call",
+            timestamp=time.time(),
+            event_type="denial",
             agent=agent,
-            data={
-                "tool": tool,
-                "latency_ms": result["latency_ms"],
-                "success": result["success"],
-            },
+            data={"rule": rule, "severity": severity},
         ))
 
     def on_error(self, agent: str, error: Exception) -> None:
         self.monitor.record(AgentEvent(
+            timestamp=time.time(),
             event_type="error",
             agent=agent,
             data={
@@ -155,6 +162,7 @@ class MyPlatformMonitor:
 For REST API-based agents:
 
 ```python
+import time
 # FastAPI example
 from fastapi import Request, HTTPException
 from theaios.agent_monitor import Monitor, load_config, AgentEvent
@@ -175,9 +183,10 @@ async def monitor_middleware(request: Request, call_next):
 
     # Record the request as an event
     monitor.record(AgentEvent(
-        event_type="llm_call",
+        timestamp=time.time(),
+        event_type="action",
         agent=agent,
-        data={"latency_ms": elapsed},
+        latency_ms=elapsed,
     ))
 
     return response
@@ -190,6 +199,7 @@ async def monitor_middleware(request: Request, call_next):
 ### LangChain
 
 ```python
+import time
 from langchain.callbacks.base import BaseCallbackHandler
 from theaios.agent_monitor import Monitor, AgentEvent
 
@@ -200,14 +210,16 @@ class MonitorCallback(BaseCallbackHandler):
 
     def on_llm_end(self, response, **kwargs):
         self.monitor.record(AgentEvent(
-            event_type="llm_call",
+            timestamp=time.time(),
+            event_type="action",
             agent=self.agent,
             data={"model": response.llm_output.get("model_name", "unknown")},
         ))
 
     def on_tool_start(self, serialized, input_str, **kwargs):
         self.monitor.record(AgentEvent(
-            event_type="tool_call",
+            timestamp=time.time(),
+            event_type="action",
             agent=self.agent,
             data={"tool": serialized.get("name", "unknown")},
         ))
@@ -216,15 +228,16 @@ class MonitorCallback(BaseCallbackHandler):
 ### CrewAI / AutoGen
 
 ```python
+import time
+
 # After each agent step
 monitor.record(AgentEvent(
-    event_type="llm_call",
+    timestamp=time.time(),
+    event_type="action",
     agent=agent.name,
-    data={
-        "model": agent.model,
-        "latency_ms": step_time_ms,
-        "cost": step_cost,
-    },
+    cost_usd=step_cost,
+    latency_ms=step_time_ms,
+    data={"model": agent.model},
 ))
 ```
 

@@ -1,6 +1,21 @@
 # CLI Reference
 
-The `agent-monitor` CLI lets you validate configs, record events, view metrics, manage kill switches, and export compliance reports from the terminal.
+The `agent-monitor` CLI lets you validate configs, inspect parsed state, view metrics, query events, manage kill switches, and export compliance reports from the terminal.
+
+---
+
+## Global Options
+
+The config file path is specified as a **group option** on the top-level command, before the subcommand:
+
+```bash
+agent-monitor -c monitor.yaml <command>
+agent-monitor --config /path/to/monitor.yaml <command>
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-c`, `--config` | `monitor.yaml` | Path to monitor config file |
 
 ---
 
@@ -12,7 +27,7 @@ Show the installed version.
 
 ```bash
 agent-monitor version
-# agent-monitor 0.1.0
+# theaios-agent-monitor 0.1.0
 ```
 
 ---
@@ -22,142 +37,176 @@ agent-monitor version
 Check a config file for errors.
 
 ```bash
-agent-monitor validate --config monitor.yaml
-# Config is valid: 4 event types, 4 metrics, 2 anomaly rules, 1 kill policies
+agent-monitor -c monitor.yaml validate
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--config`, `-c` | `monitor.yaml` | Config file path |
-
 Exit code 0 = valid, 1 = errors found.
+
+Output includes a summary of agents, anomaly rules, kill policies, and alert channels.
 
 ---
 
 ### `agent-monitor inspect`
 
-Display a formatted summary of the config.
+Dump the parsed config as JSON. Useful for debugging interpolation and default values.
 
 ```bash
-agent-monitor inspect --config monitor.yaml
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--config`, `-c` | `monitor.yaml` | Config file path |
-
-Shows: event types, metrics, anomaly rules, kill policies, alert channels, compliance formats.
-
----
-
-### `agent-monitor record`
-
-Record a single event from the CLI.
-
-```bash
-agent-monitor record --config monitor.yaml \
-  --event '{"event_type":"llm_call","agent":"sales-agent","data":{"latency_ms":350,"cost":0.007}}'
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--config`, `-c` | `monitor.yaml` | Config file path |
-| `--event`, `-e` | **(required)** | Event as a JSON string |
-
-**Event JSON format:**
-
-```json
-{
-  "event_type": "llm_call",
-  "agent": "sales-agent",
-  "data": {"latency_ms": 350, "cost": 0.007},
-  "session_id": "optional"
-}
+agent-monitor -c monitor.yaml inspect
 ```
 
 ---
 
-### `agent-monitor metrics`
+### `agent-monitor status`
 
-View current metrics for an agent.
+Show current agent metrics and kill switch state.
 
 ```bash
-agent-monitor metrics --config monitor.yaml --agent sales-agent
-agent-monitor metrics --config monitor.yaml --agent sales-agent --output json
+# All agents
+agent-monitor -c monitor.yaml status
+
+# Specific agent
+agent-monitor -c monitor.yaml status --agent sales-agent
+
+# Custom window
+agent-monitor -c monitor.yaml status --window 60
+
+# JSON output
+agent-monitor -c monitor.yaml status --json
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--config`, `-c` | `monitor.yaml` | Config file path |
-| `--agent`, `-a` | **(required)** | Agent name |
-| `--output`, `-o` | `console` | Output format: `console` or `json` |
+| `-w`, `--window` | `300` | Window size in seconds |
+| `-a`, `--agent` | -- | Filter by agent name |
+| `--json` | `false` | Output as JSON |
+
+---
+
+### `agent-monitor events`
+
+Query stored agent events from the JSONL event store.
+
+```bash
+# Recent events
+agent-monitor -c monitor.yaml events
+
+# Filter by agent
+agent-monitor -c monitor.yaml events --agent sales-agent
+
+# Filter by event type
+agent-monitor -c monitor.yaml events --type denial
+
+# Filter by time
+agent-monitor -c monitor.yaml events --since "2026-03-01T00:00:00"
+
+# Limit results
+agent-monitor -c monitor.yaml events -n 50
+
+# JSON output
+agent-monitor -c monitor.yaml events --json
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-n`, `--limit` | `20` | Number of events to show |
+| `-a`, `--agent` | -- | Filter by agent name |
+| `-t`, `--type` | -- | Filter by event type |
+| `--since` | -- | ISO timestamp filter |
+| `--json` | `false` | Output as JSON |
+
+---
+
+### `agent-monitor alerts`
+
+Show recent alerts from the alert log.
+
+```bash
+agent-monitor -c monitor.yaml alerts
+agent-monitor -c monitor.yaml alerts -n 50
+agent-monitor -c monitor.yaml alerts --json
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-n`, `--limit` | `20` | Number of alerts to show |
+| `--json` | `false` | Output as JSON |
 
 ---
 
 ### `agent-monitor kill`
 
-Kill an agent or trigger global kill.
+Kill an agent, session, or activate global kill. Takes a `TARGET` argument.
 
 ```bash
 # Kill a specific agent
-agent-monitor kill --config monitor.yaml --agent sales-agent --reason "Cost spike"
+agent-monitor -c monitor.yaml kill sales-agent --reason "Cost spike"
+
+# Kill a session
+agent-monitor -c monitor.yaml kill sess-abc-123 --session --reason "Suspicious"
 
 # Global kill
-agent-monitor kill --config monitor.yaml --global --reason "Emergency"
+agent-monitor -c monitor.yaml kill ALL --global-kill --reason "Emergency"
 ```
 
-| Option | Default | Description |
+| Argument/Option | Default | Description |
 |--------|---------|-------------|
-| `--config`, `-c` | `monitor.yaml` | Config file path |
-| `--agent`, `-a` | -- | Agent to kill |
-| `--global` | `false` | Kill all agents |
-| `--reason`, `-r` | `"manual kill"` | Reason for the kill |
+| `TARGET` | **(required)** | Agent name, session ID, or any string for global |
+| `-r`, `--reason` | `""` | Reason for the kill |
+| `--session` | `false` | Kill a session instead of an agent |
+| `--global-kill` | `false` | Activate global kill |
 
 ---
 
 ### `agent-monitor revive`
 
-Revive a killed agent or clear global kill.
+Revive a killed agent, session, or deactivate global kill. Takes a `TARGET` argument.
 
 ```bash
 # Revive a specific agent
-agent-monitor revive --config monitor.yaml --agent sales-agent
+agent-monitor -c monitor.yaml revive sales-agent
 
-# Revive globally
-agent-monitor revive --config monitor.yaml --global
+# Revive a session
+agent-monitor -c monitor.yaml revive sess-abc-123 --session
+
+# Deactivate global kill
+agent-monitor -c monitor.yaml revive ALL --global-revive
 ```
 
-| Option | Default | Description |
+| Argument/Option | Default | Description |
 |--------|---------|-------------|
-| `--config`, `-c` | `monitor.yaml` | Config file path |
-| `--agent`, `-a` | -- | Agent to revive |
-| `--global` | `false` | Revive all agents |
+| `TARGET` | **(required)** | Agent name, session ID, or any string for global |
+| `--session` | `false` | Revive a session instead of an agent |
+| `--global-revive` | `false` | Deactivate global kill |
 
 ---
 
 ### `agent-monitor export`
 
-Export a compliance report.
+Export a compliance report to stdout.
 
 ```bash
-# JSON export to stdout
-agent-monitor export --config monitor.yaml --format json
+# JSON export
+agent-monitor -c monitor.yaml export
 
-# SOC 2 export to file
-agent-monitor export --config monitor.yaml --format soc2 --output-file report.json
+# SOC 2 export
+agent-monitor -c monitor.yaml export --format soc2
+
+# GDPR export
+agent-monitor -c monitor.yaml export --format gdpr
 
 # Filtered by agent
-agent-monitor export --config monitor.yaml --format json --agent sales-agent
+agent-monitor -c monitor.yaml export --format json --agent sales-agent
+
+# Filtered by time range
+agent-monitor -c monitor.yaml export --format soc2 --since "2026-03-01T00:00:00" --until "2026-03-28T00:00:00"
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--config`, `-c` | `monitor.yaml` | Config file path |
-| `--format`, `-f` | `json` | Export format: `json`, `soc2`, `gdpr` |
-| `--agent`, `-a` | -- | Filter by agent |
-| `--since` | -- | Filter events after this ISO timestamp |
-| `--until` | -- | Filter events before this ISO timestamp |
-| `--output-file` | -- | Write output to file (default: stdout) |
+| `-f`, `--format` | `json` | Export format: `json`, `soc2`, `gdpr` |
+| `-a`, `--agent` | -- | Filter by agent |
+| `--since` | -- | ISO timestamp filter (start) |
+| `--until` | -- | ISO timestamp filter (end) |
 
 ---
 
@@ -166,4 +215,4 @@ agent-monitor export --config monitor.yaml --format json --agent sales-agent
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Validation error or agent is killed |
+| 1 | Validation error, file not found, or other error |

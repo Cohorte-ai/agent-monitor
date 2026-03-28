@@ -30,7 +30,7 @@ Record every agent event. Compute real-time metrics over rolling windows. Detect
 
 This is **not** LangSmith, Langfuse, or Arize. Those are tracing platforms that collect data. This library collects data **and acts on it** -- anomaly detection triggers alerts, kill switches stop agents, compliance export generates audit reports. Governance, not just observation.
 
-- **Event collection** -- record LLM calls, tool calls, guardrail decisions, errors, custom events
+- **Event collection** -- record agent actions, guardrail triggers, denials, approvals, costs, errors
 - **Real-time metrics** -- event count, denial rate, cost/minute, average latency over configurable rolling windows
 - **Statistical baselines** -- Welford's online algorithm for running mean and stddev, z-score anomaly detection
 - **Kill switches** -- instant agent/session/global kill, automatic kill policies on metric thresholds, persistence across restarts
@@ -51,16 +51,19 @@ pip install theaios-agent-monitor
 ```yaml
 # monitor.yaml
 version: "1.0"
-agent_name: my-agent
+metadata:
+  name: my-monitor
+  description: Production agent monitoring
 
 metrics:
-  window_seconds: 300
-  tracked: [event_count, denial_rate, cost_per_minute, avg_latency_ms]
+  default_window_seconds: 300
 
 kill_switch:
+  enabled: true
   policies:
     - name: auto-kill-on-high-cost
       metric: cost_per_minute
+      operator: ">"
       threshold: 5.0
       action: kill_agent
       severity: critical
@@ -73,15 +76,19 @@ alerts:
 **2. Use it:**
 
 ```python
+import time
 from theaios.agent_monitor import Monitor, load_config, AgentEvent
 
 monitor = Monitor(load_config("monitor.yaml"))
 
 # Record events
 monitor.record(AgentEvent(
-    event_type="llm_call",
+    timestamp=time.time(),
+    event_type="action",
     agent="sales-agent",
-    data={"model": "gpt-4", "latency_ms": 350.0, "cost": 0.007},
+    cost_usd=0.007,
+    latency_ms=350.0,
+    data={"model": "gpt-4"},
 ))
 
 # View metrics
@@ -94,30 +101,33 @@ print(f"Denial rate: {snap.denial_rate:.1%}")
 monitor.kill_agent("sales-agent", reason="Cost spike detected")
 ```
 
-**Events** tell the monitor what's happening. Each event has an `event_type`, an `agent`, and a `data` dict:
+**Events** tell the monitor what's happening. Each event has an `event_type`, an `agent`, a `timestamp`, and optional fields for cost, latency, session, and arbitrary data:
 
 ```python
-# LLM call with cost and latency
+import time
+
+# Action event with cost and latency
 monitor.record(AgentEvent(
-    event_type="llm_call", agent="my-agent",
-    data={"model": "gpt-4", "latency_ms": 350.0, "cost": 0.007},
+    timestamp=time.time(), event_type="action", agent="my-agent",
+    cost_usd=0.007, latency_ms=350.0,
+    data={"model": "gpt-4"},
 ))
 
-# Guardrail decision (feeds denial_rate metric)
+# Denial (guardrail blocked the request — feeds denial_rate metric)
 monitor.record(AgentEvent(
-    event_type="guardrail_decision", agent="my-agent",
-    data={"rule": "block-injection", "outcome": "deny", "severity": "critical"},
+    timestamp=time.time(), event_type="denial", agent="my-agent",
+    data={"rule": "block-injection", "severity": "critical"},
 ))
 
-# Tool call
+# Guardrail trigger (non-denial, e.g., redact or log)
 monitor.record(AgentEvent(
-    event_type="tool_call", agent="my-agent",
-    data={"tool": "search_api", "latency_ms": 120.0, "success": True},
+    timestamp=time.time(), event_type="guardrail_trigger", agent="my-agent",
+    data={"rule": "redact-pii", "outcome": "redact"},
 ))
 
 # Error
 monitor.record(AgentEvent(
-    event_type="error", agent="my-agent",
+    timestamp=time.time(), event_type="error", agent="my-agent",
     data={"error_type": "TimeoutError", "message": "LLM call timed out"},
 ))
 ```
@@ -125,13 +135,13 @@ monitor.record(AgentEvent(
 **3. CLI:**
 
 ```bash
-agent-monitor validate --config monitor.yaml
-agent-monitor inspect --config monitor.yaml
-agent-monitor record --config monitor.yaml --event '{"event_type":"llm_call","agent":"test","data":{"cost":0.01}}'
-agent-monitor metrics --config monitor.yaml --agent test
-agent-monitor kill --config monitor.yaml --agent test --reason "Cost spike"
-agent-monitor revive --config monitor.yaml --agent test
-agent-monitor export --config monitor.yaml --format soc2
+agent-monitor -c monitor.yaml validate
+agent-monitor -c monitor.yaml inspect
+agent-monitor -c monitor.yaml status --agent sales-agent
+agent-monitor -c monitor.yaml events --agent sales-agent --type action
+agent-monitor -c monitor.yaml kill sales-agent --reason "Cost spike"
+agent-monitor -c monitor.yaml revive sales-agent
+agent-monitor -c monitor.yaml export --format soc2
 ```
 
 ## Why This Library?

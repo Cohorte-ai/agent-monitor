@@ -63,6 +63,8 @@ nav:
   - Reference:
       - CLI: cli.md
       - Python API: api-reference.md
+  - Tools:
+      - AI Config Generator: ai-config-generator.md
 
 extra:
   social:
