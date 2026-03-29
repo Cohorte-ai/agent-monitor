@@ -2,18 +2,40 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import sys
 import time
 import urllib.request
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlparse
 
 from theaios.agent_monitor.types import (
     SEVERITY_ORDER,
     AlertConfig,
     AnomalyAlert,
 )
+
+
+def _validate_url(url: str) -> None:
+    """Validate a URL to prevent SSRF attacks.
+
+    Rejects non-HTTP(S) schemes and private/internal IP addresses.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Only http/https URLs allowed, got: {parsed.scheme}")
+    hostname = parsed.hostname or ""
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            raise ValueError(f"Private/internal IP addresses not allowed: {hostname}")
+    except ValueError as exc:
+        # Re-raise our own ValueError (SSRF block), but ignore parse errors
+        # (hostname is not an IP literal, which is fine)
+        if "not allowed" in str(exc):
+            raise
 
 
 class AlertDispatcher:
@@ -62,6 +84,13 @@ class AlertDispatcher:
         headers: dict[str, str] | None = None,
     ) -> None:
         """Dispatch an alert via HTTP POST using stdlib urllib.request."""
+        # Security: validate URL to prevent SSRF
+        try:
+            _validate_url(url)
+        except ValueError:
+            print(f"[ALERT] Blocked webhook to unsafe URL: {url}", file=sys.stderr)
+            return
+
         payload = json.dumps(entry, default=str).encode("utf-8")
         req_headers = {"Content-Type": "application/json"}
         if headers:

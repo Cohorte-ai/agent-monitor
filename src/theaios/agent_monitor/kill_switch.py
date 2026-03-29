@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import tempfile
 import time
 from pathlib import Path
 
@@ -11,6 +13,8 @@ from theaios.agent_monitor.types import (
     KillSwitchConfig,
     MetricSnapshot,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class KillSwitch:
@@ -161,7 +165,7 @@ class KillSwitch:
         return triggered
 
     def save(self) -> None:
-        """Persist kill state to disk."""
+        """Persist kill state to disk (atomic write)."""
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
 
         data = {
@@ -172,16 +176,30 @@ class KillSwitch:
             "saved_at": time.time(),
         }
 
-        with open(self._state_path, "w", encoding="utf-8") as f:
+        # Atomic write: write to temp file then rename to prevent corruption
+        with tempfile.NamedTemporaryFile(
+            dir=self._state_path.parent, mode="w", encoding="utf-8",
+            suffix=".tmp", delete=False
+        ) as f:
             json.dump(data, f, indent=2, default=str)
+            temp_path = Path(f.name)
+        temp_path.replace(self._state_path)
 
     def load(self) -> None:
         """Load kill state from disk."""
         if not self._state_path.exists():
             return
 
-        with open(self._state_path, encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(self._state_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            _logger.warning("Failed to load kill state from %s — using defaults", self._state_path)
+            return
+
+        if not isinstance(data, dict):
+            _logger.warning("Kill state file is not a dict — using defaults")
+            return
 
         agents_raw = data.get("killed_agents", [])
         sessions_raw = data.get("killed_sessions", [])
