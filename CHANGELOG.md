@@ -5,6 +5,15 @@ All notable changes to theaios-agent-monitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-03-29
+
+### Security
+
+- SSRF protection on webhook alerts: blocks private IPs, loopback, link-local, non-HTTP schemes
+- Atomic writes for kill switch state persistence (tempfile + replace)
+- JSON structure validation when loading kill state from disk
+- Config structural validation before env var interpolation
+
 ## [0.1.0] - 2026-03-28
 
 ### Added
