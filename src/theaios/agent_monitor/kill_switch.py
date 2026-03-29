@@ -178,8 +178,7 @@ class KillSwitch:
 
         # Atomic write: write to temp file then rename to prevent corruption
         with tempfile.NamedTemporaryFile(
-            dir=self._state_path.parent, mode="w", encoding="utf-8",
-            suffix=".tmp", delete=False
+            dir=self._state_path.parent, mode="w", encoding="utf-8", suffix=".tmp", delete=False
         ) as f:
             json.dump(data, f, indent=2, default=str)
             temp_path = Path(f.name)
