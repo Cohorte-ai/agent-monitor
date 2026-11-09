@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import os
-import re
 from pathlib import Path
 
 import yaml
+from theaios.core.env import interpolate_env, interpolate_recursive
 
 from theaios.agent_monitor.types import (
     VALID_ALERT_CHANNELS,
@@ -27,8 +26,6 @@ from theaios.agent_monitor.types import (
     StorageConfig,
 )
 
-_ENV_PATTERN = re.compile(r"\$\{(\w+)(?::([^}]*))?\}")
-
 
 class ConfigError(Exception):
     """Raised when a monitor config file is invalid."""
@@ -39,30 +36,13 @@ class ConfigError(Exception):
 
 
 def _interpolate_env(value: str) -> str:
-    """Replace ${ENV_VAR} and ${ENV_VAR:default} in a string."""
-
-    def _replace(match: re.Match[str]) -> str:
-        var_name = match.group(1)
-        default = match.group(2)
-        env_val = os.environ.get(var_name)
-        if env_val is not None:
-            return env_val
-        if default is not None:
-            return default
-        return match.group(0)
-
-    return _ENV_PATTERN.sub(_replace, value)
+    """Replace ${VAR} placeholders (see theaios.core.env)."""
+    return interpolate_env(value, defaults=True)
 
 
 def _interpolate_recursive(obj: object) -> object:
-    """Recursively interpolate environment variables in a data structure."""
-    if isinstance(obj, str):
-        return _interpolate_env(obj)
-    if isinstance(obj, dict):
-        return {k: _interpolate_recursive(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_interpolate_recursive(item) for item in obj]
-    return obj
+    """Interpolate env vars in every string of a parsed config."""
+    return interpolate_recursive(obj, defaults=True)
 
 
 def load_config(path: str = "monitor.yaml") -> MonitorConfig:
