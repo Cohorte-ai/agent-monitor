@@ -245,3 +245,27 @@ def test_model_chosen_names_are_capped(basic_config: MonitorConfig) -> None:
     agent.invoke({"messages": [("user", "x")]}, CFG)
     event: Any = monitor.get_events()[0]
     assert len(event["data"]["tool"]) <= 200 and len(event["data"]["tool_call_id"]) <= 200
+
+
+def test_a_sub_agent_call_hit_by_its_parents_kill_is_tagged(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+
+    @tool
+    def kill_parent() -> str:
+        """Simulates the operator killing the parent while this tool runs."""
+        monitor.kill_agent("assistant", "operator")
+        return "done"
+
+    model = Model(messages=iter([_call("kill_parent", "c1"), AIMessage(content="done")]))
+    sub = create_agent(
+        model,
+        [kill_parent],
+        name="researcher",
+        checkpointer=InMemorySaver(),
+        middleware=[MonitorMiddleware(monitor, delegated_by="assistant")],
+    )
+    with pytest.raises(AgentKilled):
+        sub.invoke({"messages": [("user", "x")]}, CFG)
+    events: Any = monitor.get_events()
+    (event,) = events
+    assert event["event_type"] == "action" and event["tags"] == ["after_kill"]

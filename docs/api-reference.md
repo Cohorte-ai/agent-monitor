@@ -42,7 +42,7 @@ On construction, the monitor initializes:
 
 Record an agent event through the full monitoring pipeline. Returns `None` (not a boolean).
 
-When the agent is killed, the event is silently dropped.
+When the agent or session is killed, the event is stored and exported tagged `after_kill`, and feeds no metrics, baselines, anomaly detection or kill policies.
 
 ```python
 import time

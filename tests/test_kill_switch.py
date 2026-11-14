@@ -197,3 +197,27 @@ def test_events_after_a_kill_are_stored_tagged_but_feed_no_metrics(tmp_path: Pat
     (event,) = m.get_events()
     assert event["tags"] == ["after_kill"] and event["cost_usd"] == 1.5
     assert m.get_metrics("a").event_count == 0
+
+
+def test_relative_paths_in_a_config_file_are_relative_to_it(tmp_path: Path) -> None:
+    import os
+
+    from theaios.agent_monitor import Monitor, load_config
+
+    conf = tmp_path / "svc"
+    conf.mkdir()
+    (conf / "monitor.yaml").write_text(
+        'version: "1.0"\nkill_switch:\n  state_path: state/kill.json\n'
+        "storage:\n  path: state/events.jsonl\n"
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    service = Monitor(load_config(str(conf / "monitor.yaml")))
+    cwd = os.getcwd()
+    os.chdir(elsewhere)
+    try:  # an operator running the CLI from another directory
+        KillSwitch(load_config(str(conf / "monitor.yaml")).kill_switch).kill_agent("a")
+    finally:
+        os.chdir(cwd)
+    assert service.is_killed("a")
+    assert (conf / "state" / "kill.json").exists() and not (elsewhere / "state").exists()

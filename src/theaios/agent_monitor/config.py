@@ -73,7 +73,24 @@ def load_config(path: str = "monitor.yaml") -> MonitorConfig:
     if errors:
         raise ConfigError(errors)
 
+    _anchor_paths(config, config_path.resolve().parent)
+
     return config
+
+
+def _anchor_paths(config: MonitorConfig, base: Path) -> None:
+    """Relative paths in a config file are relative to that file, not to the current
+    directory: the CLI run from anywhere and the service must reach the same kill state."""
+
+    def anchored(value: str) -> str:
+        return value if not value or Path(value).is_absolute() else str(base / value)
+
+    config.storage.path = anchored(config.storage.path)
+    config.baselines.storage_path = anchored(config.baselines.storage_path)
+    config.kill_switch.state_path = anchored(config.kill_switch.state_path)
+    for channel in config.alerts.channels:
+        if channel.path:
+            channel.path = anchored(channel.path)
 
 
 def _parse_config(raw: dict[str, object]) -> MonitorConfig:

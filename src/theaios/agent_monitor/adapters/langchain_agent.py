@@ -24,7 +24,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from theaios.agent_monitor.engine import Monitor
+from theaios.agent_monitor.engine import AFTER_KILL, Monitor
 from theaios.agent_monitor.kill_switch import AgentKilled
 from theaios.agent_monitor.types import AgentEvent
 
@@ -201,6 +201,8 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
         data: dict[str, object],
     ) -> None:
         agent, session, user = who
+        # A kill of the parent also hit this sub-agent's call (the monitor tags its own kills).
+        parent_killed = self._parent is not None and self._monitor.is_killed(self._parent, session)
         self._monitor.record(
             AgentEvent(
                 timestamp=time.time(),
@@ -213,6 +215,7 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
                 },
                 session_id=session,
                 user=user,
+                tags=[AFTER_KILL] if parent_killed else [],
                 latency_ms=(time.perf_counter() - start) * 1000 if start is not None else None,
             )
         )

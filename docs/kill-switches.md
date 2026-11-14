@@ -189,7 +189,7 @@ kill_switch:
   state_path: /var/lib/agent-monitor/kill_state.json
 ```
 
-Every kill and revive is saved to `state_path` at once (default `.agent_monitor/kill_state.json`), and a monitor loads it when it starts. A running monitor also picks up a kill made elsewhere (`agent-monitor kill <agent>` from the CLI, another worker) on its next check: the file is re-read when it changes. Before 0.2 nothing was saved or loaded, so killed agents came back after a restart and the CLI's `kill` did not reach running agents.
+Every kill and revive is saved to `state_path` at once (default `.agent_monitor/kill_state.json`; a relative path is relative to the config file, so the CLI run from any directory reaches the same state), and a monitor loads it when it starts. A running monitor also picks up a kill made elsewhere (`agent-monitor kill <agent>` from the CLI, another worker) on its next check: the file is re-read when it changes. Before 0.2 nothing was saved or loaded, so killed agents came back after a restart and the CLI's `kill` did not reach running agents.
 
 This means:
 
@@ -199,15 +199,12 @@ This means:
 
 ---
 
-## How Events Are Rejected
+## Events of a killed agent
 
-When `monitor.record()` is called for a killed agent:
-
-1. The kill switch is checked **first**, before any other processing
-2. If the agent is killed, the event is **not** stored, metrics are **not** updated
-3. `record()` returns `None` (it always returns `None`)
-
-This is the fastest possible circuit breaker -- no metrics computation, no baseline updates, no anomaly detection. Just a set lookup (O(1)).
+The kill switch stops what an agent asks for (through the adapters: `AgentKilled`). What a killed
+agent still did (an action already running when the kill hit, spend through an unguarded call)
+is recorded: `monitor.record()` stores and exports the event tagged `after_kill`, and it feeds
+no metrics, baselines, anomaly detection or kill policies. (Before 0.2 such events were dropped.)
 
 ---
 

@@ -102,7 +102,7 @@ provider and its exporter the usual way. Before 0.2 the exporter replaced the gl
 with an empty one, so nothing was exported; it now uses yours. An exporter that fails never
 stops recording (it warns).
 
-Each span is named after the event (`denial:send_email`) and carries the agent, session, user,
+Each span is named after the event and its tool (`denial:send_email`; `agent.cost` for an event without a tool) and carries the agent, session, user,
 cost, latency and data, with Langfuse's observation attributes (denials as `guardrail`
 observations at `WARNING` level, tool calls as `tool`, LLM costs as `generation`).
 
