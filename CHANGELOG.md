@@ -20,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Kill state persists and is shared.** Every kill and revive is saved to `kill_switch.state_path` and loaded at start; a running monitor picks up a kill made by another process (the CLI's `agent-monitor kill`, another worker) when the file changes. Before, nothing was saved or loaded: killed agents came back after a restart, and the CLI's kill never reached a running agent.
 - **Events of a killed agent are recorded, tagged `after_kill`**, instead of dropped (an action already running when the kill hit, spend through an unguarded LiteLLM call); they feed no metrics, baselines, anomaly detection or kill policies.
 - **Relative paths in a config file are relative to that file** (`storage.path`, `baselines.storage_path`, `kill_switch.state_path`, file alert channels), not to the current directory: the CLI's `kill` run from another directory wrote a different state file and never reached the service.
-- One `approval_request` event per proposal (a resumed sibling or the parent of a pausing sub-agent recorded it again); model-chosen tool names and call ids are capped at 200 characters, OpenTelemetry string attributes at 2,000.
+- `delegated_by` takes the whole chain (`["assistant", "researcher"]`): killing the root stops a sub-agent of a sub-agent.
+- Kill-state writes hold a file lock across read-modify-write: a kill made at the same moment as another process's write was lost.
+- Only refusals carrying the theaios mark (theaios-core 0.1.2) are recorded as denials; decision reasons are capped at 1,000 characters; LangGraph pauses that are not theaios approvals are not recorded as approval requests.
+- One `approval_request` event per proposal and asking call (a resumed sibling or the parent of a pausing sub-agent recorded it again); model-chosen tool names and call ids are capped at 200 characters, OpenTelemetry string attributes at 2,000.
 
 ### Fixed
 

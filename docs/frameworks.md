@@ -28,15 +28,16 @@ Put it **first** (the outermost), so it sees what the middlewares inside it deci
   failed), and `approval_request` once per proposal when the run pauses for a person. Model
   calls are not events (their cost comes from LiteLLM, below). Tool names and call ids, which
   the model chooses, are capped at 200 characters.
-- A `denial` is any error result carrying `artifact["theaios"]`, the marker the theaios
-  middlewares set. Your own tools should not set it.
+- A `denial` is an error result carrying a theaios refusal (`artifact["theaios"]` with the
+  per-process mark only the theaios middlewares can set); anything else is an `error`.
 - Agent = `agent=` or the graph's name; session = the LangGraph `thread_id`; user = `user=` or
   `runtime.context.user_id`.
 
 Deep Agents does not pass the main agent's middleware to its sub-agents: add a
 `MonitorMiddleware` to each sub-agent's `middleware` (same monitor), with `delegated_by`, so
 killing the main agent also stops a sub-agent mid-task. A sub-agent's middleware without
-`delegated_by` raises. Deep Agents also adds a `general-purpose` sub-agent with all the main
+`delegated_by` raises. For a sub-agent of a sub-agent, list every agent above it, outermost
+first (`delegated_by=["assistant", "researcher"]`): killing any of them stops it. Deep Agents also adds a `general-purpose` sub-agent with all the main
 agent's tools: give it the middlewares too, or turn it off (see the guardrails and agent-auth
 guides).
 

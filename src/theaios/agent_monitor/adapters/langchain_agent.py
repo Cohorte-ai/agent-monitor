@@ -21,8 +21,10 @@ import threading
 import time
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
+
+from theaios.core.marks import is_marked
 
 from theaios.agent_monitor.engine import AFTER_KILL, Monitor
 from theaios.agent_monitor.kill_switch import AgentKilled
@@ -62,17 +64,21 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
         *,
         agent: str | None = None,
         user: Callable[[Any], str | None] | None = None,
-        delegated_by: str | None = None,
+        delegated_by: str | Sequence[str] | None = None,
     ) -> None:
         super().__init__()
         if not isinstance(monitor, Monitor):
             raise TypeError("MonitorMiddleware needs a Monitor")
-        if delegated_by is not None and not (isinstance(delegated_by, str) and delegated_by):
-            raise ValueError("delegated_by must be the parent agent's name")
+        chain = [delegated_by] if isinstance(delegated_by, str) else list(delegated_by or [])
+        if delegated_by is not None and (
+            not chain or not all(isinstance(a, str) and a for a in chain)
+        ):
+            raise ValueError("delegated_by must name the parent agent(s), outermost first")
         self._monitor = monitor
         self._agent = agent
         self._user = user
-        self._parent = delegated_by
+        self._chain = chain  # every ancestor: killing any of them stops this sub-agent
+        self._parent = chain[-1] if chain else None
 
     # Kill switch before every model call -------------------------------------------------
 
@@ -138,8 +144,8 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
                 f"'{agent}' runs as a sub-agent: give its MonitorMiddleware "
                 "delegated_by='<parent agent>' so killing the parent stops it too"
             )
-        for who in (agent, self._parent):
-            if who is not None and self._monitor.is_killed(who, session):
+        for who in (agent, *self._chain):
+            if self._monitor.is_killed(who, session):
                 raise AgentKilled(who, session)
 
     def _who(self, request: ToolCallRequest) -> tuple[str, str | None, str | None]:
@@ -166,9 +172,9 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
         if isinstance(result, ToolMessage) and result.status == "error":
             artifact = result.artifact if isinstance(result.artifact, Mapping) else {}
             decision = artifact.get("theaios") if isinstance(artifact, Mapping) else None
-            if isinstance(decision, Mapping):
+            if isinstance(decision, Mapping) and is_marked(decision.get("mark")):
                 data = {
-                    k: decision.get(k)
+                    k: _cap_value(decision.get(k))
                     for k in ("component", "codes", "reason", "proposal_id")
                     if decision.get(k) is not None
                 }
@@ -186,9 +192,16 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
     ) -> None:
         asks = [i.value for i in (pause.args[0] if pause.args else []) if hasattr(i, "value")]
         ask = asks[0] if asks and isinstance(asks[0], Mapping) else {}
-        data = {k: ask.get(k) for k in ("component", "proposal_id", "tier") if ask.get(k)}
-        proposal = data.get("proposal_id")
-        if isinstance(proposal, str) and not _first_ask(self._monitor, proposal):
+        if ask.get("type") != "theaios.approval":
+            return  # a pause that is not an approval request (a tool asking its own question)
+        data = {
+            k: _cap_value(ask.get(k)) for k in ("component", "proposal_id", "tier") if ask.get(k)
+        }
+        # One event per (proposal, the call that asked): the parent of a pausing sub-agent sees
+        # the same ask; a new call asking again under a reused proposal is a new request.
+        asker = ask.get("tool_call_id") or request.tool_call.get("id")
+        key = f"{ask.get('proposal_id')}|{asker}"
+        if not _first_ask(self._monitor, key):
             return  # the same pause seen again (a resumed sibling, the parent of a sub-agent)
         self._record(request, who, "approval_request", None, data)
 
@@ -202,7 +215,7 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
     ) -> None:
         agent, session, user = who
         # A kill of the parent also hit this sub-agent's call (the monitor tags its own kills).
-        parent_killed = self._parent is not None and self._monitor.is_killed(self._parent, session)
+        parent_killed = any(self._monitor.is_killed(a, session) for a in self._chain)
         self._monitor.record(
             AgentEvent(
                 timestamp=time.time(),
@@ -222,6 +235,7 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
 
 
 MAX_NAME = 200  # the model chooses tool names and call ids: cap what we store and export
+MAX_TEXT = 1000
 _ASKS_KEPT = 10_000
 _seen_asks: weakref.WeakKeyDictionary[Monitor, OrderedDict[str, None]] = weakref.WeakKeyDictionary()
 _asks_lock = threading.Lock()
@@ -232,13 +246,22 @@ def _cap(value: object) -> str:
     return text if len(text) <= MAX_NAME else text[: MAX_NAME - 1] + "…"
 
 
-def _first_ask(monitor: Monitor, proposal_id: str) -> bool:
-    """True the first time this monitor sees a pause for this proposal."""
+def _cap_value(value: object) -> object:
+    """Strings and lists of strings from decisions (reasons embed tool names) are capped."""
+    if isinstance(value, str):
+        return value if len(value) <= MAX_TEXT else value[: MAX_TEXT - 1] + "…"
+    if isinstance(value, list):
+        return [_cap_value(v) for v in value[:50]]
+    return value
+
+
+def _first_ask(monitor: Monitor, key: str) -> bool:
+    """True the first time this monitor sees this pause (proposal and tool call)."""
     with _asks_lock:
         seen = _seen_asks.setdefault(monitor, OrderedDict())
-        if proposal_id in seen:
+        if key in seen:
             return False
-        seen[proposal_id] = None
+        seen[key] = None
         while len(seen) > _ASKS_KEPT:
             seen.popitem(last=False)
         return True

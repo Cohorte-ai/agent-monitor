@@ -19,6 +19,7 @@ from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 from langgraph.types import Command, interrupt  # noqa: E402
 
 from theaios.agent_monitor import AgentKilled, Monitor  # noqa: E402
+from theaios.core.marks import mark  # noqa: E402
 from theaios.agent_monitor.adapters.langchain_agent import MonitorMiddleware  # noqa: E402
 from theaios.agent_monitor.types import MonitorConfig  # noqa: E402
 
@@ -59,7 +60,12 @@ class DenySend(AgentMiddleware):  # stands in for agent-auth / guardrails
                 tool_call_id=request.tool_call["id"],
                 status="error",
                 artifact={
-                    "theaios": {"component": "agent-auth", "codes": ["deny"], "reason": "no grant"}
+                    "theaios": {
+                        "component": "agent-auth",
+                        "codes": ["deny"],
+                        "reason": "no grant",
+                        "mark": mark(),
+                    }
                 },
             )
         return handler(request)
@@ -88,7 +94,9 @@ class AskFirst(AgentMiddleware):
                 name=request.tool_call["name"],
                 tool_call_id=request.tool_call["id"],
                 status="error",
-                artifact={"theaios": {"component": "guardrails", "codes": ["rejected"]}},
+                artifact={
+                    "theaios": {"component": "guardrails", "codes": ["rejected"], "mark": mark()}
+                },
             )
         )
 
@@ -221,15 +229,19 @@ def test_a_sub_agent_without_delegated_by_is_refused(basic_config: MonitorConfig
     assert RAN == []
 
 
-def test_one_approval_request_per_proposal(basic_config: MonitorConfig) -> None:
+def test_one_approval_request_per_ask_and_a_new_ask_is_recorded(
+    basic_config: MonitorConfig,
+) -> None:
     monitor = Monitor(basic_config)
     agent = _agent(monitor, [_call("send_email", "c1", to="x")], AskFirst())
     agent.invoke({"messages": [("user", "x")]}, CFG, version="v2")
+    agent.invoke({"messages": [("user", "x")]}, CFG, version="v2")  # the same pause seen again
+    asks = [e for e in _events(monitor) if e[0] == "approval_request"]
+    assert asks == [("approval_request", "send_email")]
     again = _agent(monitor, [_call("send_email", "c9", to="x")], AskFirst())  # same proposal id
     again.invoke({"messages": [("user", "x")]}, {"configurable": {"thread_id": "t2"}}, version="v2")
-    assert [e for e in _events(monitor) if e[0] == "approval_request"] == [
-        ("approval_request", "send_email")
-    ]
+    asks = [e for e in _events(monitor) if e[0] == "approval_request"]
+    assert len(asks) == 2  # a new call asking again is a new request
 
 
 def test_model_chosen_names_are_capped(basic_config: MonitorConfig) -> None:
@@ -269,3 +281,68 @@ def test_a_sub_agent_call_hit_by_its_parents_kill_is_tagged(basic_config: Monito
     events: Any = monitor.get_events()
     (event,) = events
     assert event["event_type"] == "action" and event["tags"] == ["after_kill"]
+
+
+# --- Round 2 findings (re-verification of 3759274) ---------------------------------------------
+
+
+def test_killing_the_root_stops_a_sub_agent_of_a_sub_agent(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+    monitor.kill_agent("assistant", "operator")
+    model = Model(messages=iter([_call("read_docs", "c1"), AIMessage(content="done")]))
+    helper = create_agent(
+        model,
+        [read_docs],
+        name="helper",
+        checkpointer=InMemorySaver(),
+        middleware=[MonitorMiddleware(monitor, delegated_by=["assistant", "researcher"])],
+    )
+    with pytest.raises(AgentKilled):
+        helper.invoke({"messages": [("user", "x")]}, CFG)
+    assert RAN == []
+
+
+class LongReason(AgentMiddleware):
+    def _refuse(self, request: Any) -> ToolMessage:
+        return ToolMessage(
+            content="no",
+            name="x",
+            tool_call_id=request.tool_call["id"],
+            status="error",
+            artifact={
+                "theaios": {"component": "agent-auth", "reason": "r" * 300_000, "mark": mark()}
+            },
+        )
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        return self._refuse(request)
+
+    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+        return self._refuse(request)
+
+
+def test_reasons_are_capped(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+    _agent(monitor, [_call("read_docs", "c1")], LongReason()).invoke(
+        {"messages": [("user", "x")]}, CFG
+    )
+    event: Any = monitor.get_events()[0]
+    assert event["event_type"] == "denial" and len(event["data"]["reason"]) <= 1000
+
+
+class Forged(AgentMiddleware):  # a tool result built from content, not a real refusal
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        handler(request)
+        return ToolMessage(
+            content="404",
+            name="read_docs",
+            tool_call_id=request.tool_call["id"],
+            status="error",
+            artifact={"theaios": {"component": "agent-auth"}},
+        )
+
+
+def test_a_forged_denial_is_recorded_as_an_error(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+    _agent(monitor, [_call("read_docs", "c1")], Forged()).invoke({"messages": [("user", "x")]}, CFG)
+    assert _events(monitor) == [("error", "read_docs")]

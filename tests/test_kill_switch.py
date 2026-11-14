@@ -221,3 +221,28 @@ def test_relative_paths_in_a_config_file_are_relative_to_it(tmp_path: Path) -> N
         os.chdir(cwd)
     assert service.is_killed("a")
     assert (conf / "state" / "kill.json").exists() and not (elsewhere / "state").exists()
+
+
+def test_concurrent_writers_never_lose_a_kill(tmp_path: Path) -> None:
+    import threading
+
+    path = str(tmp_path / "kill.json")
+    stop = threading.Event()
+
+    def busy() -> None:  # another worker reviving something else, all the time
+        other = KillSwitch(KillSwitchConfig(state_path=path))
+        while not stop.is_set():
+            other.revive(agent="noise")
+
+    workers = [threading.Thread(target=busy) for _ in range(3)]
+    for w in workers:
+        w.start()
+    try:
+        for i in range(30):
+            KillSwitch(KillSwitchConfig(state_path=path)).kill_agent(f"a{i}")
+    finally:
+        stop.set()
+        for w in workers:
+            w.join()
+    fresh = KillSwitch(KillSwitchConfig(state_path=path))
+    assert all(fresh.is_killed(f"a{i}") for i in range(30))

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 from theaios.agent_monitor.types import (
@@ -61,13 +63,33 @@ class KillSwitch:
             self.load()
             self._seen = sig
 
+    @contextlib.contextmanager
+    def _file_lock(self) -> Iterator[None]:
+        """Hold an exclusive lock on the state file across read-modify-write, so a kill made
+        by another process at the same moment is merged, never overwritten (POSIX; without
+        fcntl, writes are only atomic)."""
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows
+            yield
+            return
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self._state_path.with_name(self._state_path.name + ".lock")
+        with open(lock_path, "a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                self._seen = None  # re-read under the lock: another process may just have written
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     def _changed(self) -> None:
         self.save()
         self._seen = self._signature()
 
     def kill_agent(self, agent: str, reason: str = "") -> None:
         """Kill a specific agent."""
-        with self._lock:
+        with self._lock, self._file_lock():
             self._sync()
             self._kill_agent(agent, reason)
             self._changed()
@@ -79,7 +101,7 @@ class KillSwitch:
 
     def kill_session(self, session_id: str, reason: str = "") -> None:
         """Kill a specific session."""
-        with self._lock:
+        with self._lock, self._file_lock():
             self._sync()
             self._kill_session(session_id, reason)
             self._changed()
@@ -91,7 +113,7 @@ class KillSwitch:
 
     def kill_global(self, reason: str = "") -> None:
         """Activate global kill — stops all agents."""
-        with self._lock:
+        with self._lock, self._file_lock():
             self._sync()
             self._kill_global(reason)
             self._changed()
@@ -135,7 +157,7 @@ class KillSwitch:
         session_id : str, optional
             Session to revive. Removes from killed set.
         """
-        with self._lock:
+        with self._lock, self._file_lock():
             self._sync()
             self._revive(agent, session_id)
             self._changed()
@@ -150,7 +172,7 @@ class KillSwitch:
 
     def revive_global(self) -> None:
         """Deactivate global kill switch."""
-        with self._lock:
+        with self._lock, self._file_lock():
             self._sync()
             self._revive_global()
             self._changed()
