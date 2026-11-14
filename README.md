@@ -37,8 +37,10 @@ This is **not** LangSmith, Langfuse, or Arize. Those are tracing platforms that 
 - **Anomaly detection** -- z-score rules with configurable thresholds, cooldown periods, wildcard agent matching
 - **Compliance export** -- SOC 2, GDPR, JSON reports with filtering by agent, time range, event type
 - **Alert channels** -- console, JSONL file, webhook (Slack, PagerDuty, OpsGenie)
-- **OpenTelemetry** -- optional export to any OTel-compatible backend
+- **OpenTelemetry and Langfuse** -- every event as a span on your tracer provider, with Langfuse observation attributes
 - **Guardrails adapter** -- auto-record every theaios-guardrails decision
+- **LangChain 1.x / Deep Agents middleware (0.2)** -- kill switch before every model and tool call, an event per tool call outcome. See [frameworks](docs/frameworks.md)
+- **LiteLLM (0.2)** -- cost per agent from every call, kill switch on async calls
 
 ## Quick Start
 

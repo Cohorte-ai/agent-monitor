@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from theaios.agent_monitor.config import ConfigError, load_config
 from theaios.agent_monitor.engine import Monitor
+from theaios.agent_monitor.kill_switch import AgentKilled
 from theaios.agent_monitor.types import (
     AgentEvent,
     AgentTrackConfig,
@@ -29,7 +30,7 @@ from theaios.agent_monitor.types import (
     StorageConfig,
 )
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 __all__ = [
     # Core
@@ -37,6 +38,7 @@ __all__ = [
     "load_config",
     "record",
     "ConfigError",
+    "AgentKilled",
     # Runtime types
     "AgentEvent",
     "MetricSnapshot",

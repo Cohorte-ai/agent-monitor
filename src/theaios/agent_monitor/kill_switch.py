@@ -17,6 +17,16 @@ from theaios.agent_monitor.types import (
 _logger = logging.getLogger(__name__)
 
 
+class AgentKilled(RuntimeError):
+    """An agent or session is killed: what it asked for (a model call, a tool call, an LLM
+    request) is refused. Raised by the framework adapters."""
+
+    def __init__(self, agent: str, session: str | None = None) -> None:
+        where = f" (session {session})" if session else ""
+        super().__init__(f"agent '{agent}'{where} is killed")
+        self.agent, self.session = agent, session
+
+
 class KillSwitch:
     """In-memory kill switch with JSON persistence.
 

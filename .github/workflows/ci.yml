@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -e ".[dev]"
+      - run: pip install -e ".[dev,otel,langchain-agent,litellm]"
       - name: mypy (strict)
         run: mypy src/theaios/agent_monitor/
 
@@ -46,6 +46,21 @@ jobs:
         run: pytest tests/ -v --ignore=tests/integration/ --tb=short
       - name: Integration tests
         run: pytest tests/integration/ -v --tb=short
+
+
+  adapters:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev,otel,langchain-agent,litellm]"
+      - name: Adapters (must run, not skip)
+        run: pytest tests/adapters/test_otel.py tests/adapters/test_langchain_agent.py tests/adapters/test_litellm_logger.py -v --tb=short -rs | tee out.txt && ! grep -q SKIPPED out.txt
 
   build:
     runs-on: ubuntu-latest

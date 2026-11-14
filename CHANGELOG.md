@@ -5,6 +5,20 @@ All notable changes to theaios-agent-monitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - Unreleased
+
+### Added
+
+- **LangChain 1.x / Deep Agents middleware** (`theaios.agent_monitor.adapters.langchain_agent.MonitorMiddleware`, extra `langchain-agent`): the kill switch stops the run before every model call and tool call (`AgentKilled`); every tool call becomes an `action`, `denial` (with the inner middleware's decision), `error` or `approval_request` event, with agent, session (`thread_id`), user and latency.
+- **LiteLLM logger** (`theaios.agent_monitor.adapters.litellm_logger.MonitorLogger`, extra `litellm`): a `cost` event per completed call (LiteLLM's cost, model, tokens, latency) and an `error` event per failed call, for the agent and session in the call's metadata; refuses async calls of a killed agent or session; `guard()` for sync calls.
+- `Monitor.add_exporter(exporter)`: every recorded event is also sent to `exporter.export_event(event)`; a failing exporter warns and never stops recording.
+- `AgentKilled` exception.
+
+### Fixed
+
+- `OTelExporter` replaced the application's global tracer provider with an empty one of its own (no span processor), so it exported nothing and broke any other OpenTelemetry use in the process. It now uses the provider you pass, or the global one, and never sets it. Spans carry Langfuse observation attributes, `user.id` and `session.id`.
+- The integration guide documented `OTelExporter(endpoint=...)`, `monitor.add_exporter()` and OTel metrics, none of which existed. It now documents the real API, and how to send events to Langfuse.
+
 ## [0.1.3] - 2026-11-09
 
 ### Changed

@@ -60,6 +60,7 @@ nav:
       - Kill Switches: kill-switches.md
       - Compliance Export: compliance.md
       - Integration Guide: integration.md
+      - LangChain Agents and LiteLLM: frameworks.md
   - Reference:
       - CLI: cli.md
       - Python API: api-reference.md

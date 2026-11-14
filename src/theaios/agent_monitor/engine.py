@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import warnings
+from typing import Protocol
+
 from theaios.agent_monitor.alerts import AlertDispatcher
 from theaios.agent_monitor.anomaly import AnomalyDetector
 from theaios.agent_monitor.baselines import BaselineTracker
@@ -15,6 +18,12 @@ from theaios.agent_monitor.types import (
     MetricSnapshot,
     MonitorConfig,
 )
+
+
+class EventExporter(Protocol):
+    """Anything with ``export_event(event)``, e.g. :class:`~theaios.agent_monitor.adapters.otel.OTelExporter`."""
+
+    def export_event(self, event: AgentEvent) -> None: ...
 
 
 class Monitor:
@@ -57,6 +66,14 @@ class Monitor:
         self._kill_switch = KillSwitch(config=config.kill_switch)
         self._alerts = AlertDispatcher(config=config.alerts)
         self._compliance = ComplianceExporter(event_store=self._event_store)
+        self._exporters: list[EventExporter] = []
+
+    def add_exporter(self, exporter: EventExporter) -> None:
+        """Send every recorded event to ``exporter.export_event(event)`` too, after it is
+        stored. An exporter that fails never stops recording (it warns)."""
+        if not callable(getattr(exporter, "export_event", None)):
+            raise TypeError("an exporter needs an export_event(event) method")
+        self._exporters.append(exporter)
 
     @property
     def event_store(self) -> EventStore:
@@ -92,8 +109,17 @@ class Monitor:
         if not self._should_track(event):
             return
 
-        # 3. Append to EventStore
+        # 3. Append to EventStore, then hand to exporters (never fatal)
         self._event_store.write(event)
+        for exporter in self._exporters:
+            try:
+                exporter.export_event(event)
+            except Exception as exc:  # noqa: BLE001 - an exporter must not break recording
+                warnings.warn(
+                    f"agent-monitor exporter {type(exporter).__name__} failed: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         # 4. Ingest into MetricsEngine
         self._metrics.ingest(event)
