@@ -150,3 +150,50 @@ class TestKillSwitch:
         state = ks.get_state()
         assert "agent-alpha" in state.killed_agents
         assert state.reasons["agent:agent-alpha"] == "cost exceeded $5/min"
+
+
+# --- Round 1 findings: persistence and after-kill events ---------------------------------------
+
+
+def test_a_kill_survives_a_restart_and_reaches_a_running_monitor(tmp_path: Path) -> None:
+    from theaios.agent_monitor import Monitor
+    from theaios.agent_monitor.types import MonitorConfig, StorageConfig
+
+    path = str(tmp_path / "kill.json")
+
+    def monitor() -> Monitor:
+        return Monitor(
+            MonitorConfig(
+                version="1.0",
+                storage=StorageConfig(path=str(tmp_path / "e.jsonl")),
+                kill_switch=KillSwitchConfig(state_path=path),
+            )
+        )
+
+    running = monitor()
+    assert not running.is_killed("a")
+    KillSwitch(KillSwitchConfig(state_path=path)).kill_agent("a", "from the CLI")
+    assert running.is_killed("a")  # another process's kill applies at once
+    assert monitor().is_killed("a")  # and after a restart
+    running.revive("a")
+    assert not monitor().is_killed("a")
+
+
+def test_events_after_a_kill_are_stored_tagged_but_feed_no_metrics(tmp_path: Path) -> None:
+    import time as _time
+
+    from theaios.agent_monitor import AgentEvent, Monitor
+    from theaios.agent_monitor.types import MonitorConfig, StorageConfig
+
+    m = Monitor(
+        MonitorConfig(
+            version="1.0",
+            storage=StorageConfig(path=str(tmp_path / "e.jsonl")),
+            kill_switch=KillSwitchConfig(state_path=str(tmp_path / "k.json")),
+        )
+    )
+    m.kill_agent("a", "runaway")
+    m.record(AgentEvent(timestamp=_time.time(), agent="a", event_type="cost", cost_usd=1.5))
+    (event,) = m.get_events()
+    assert event["tags"] == ["after_kill"] and event["cost_usd"] == 1.5
+    assert m.get_metrics("a").event_count == 0

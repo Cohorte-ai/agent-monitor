@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 from typing import Protocol
 
@@ -18,6 +19,10 @@ from theaios.agent_monitor.types import (
     MetricSnapshot,
     MonitorConfig,
 )
+
+
+# Tag on events recorded while their agent or session was killed.
+AFTER_KILL = "after_kill"
 
 
 class EventExporter(Protocol):
@@ -101,25 +106,21 @@ class Monitor:
         This is the hot path. Every event flows through:
         kill check -> filter -> store -> metrics -> baselines -> anomaly -> kill policies -> alerts.
         """
-        # 1. Check kill switch — reject if killed
-        if self._kill_switch.is_killed(event.agent, event.session_id):
-            return
+        # 1. Kill switch: what a killed agent still did (an action already running, spend
+        # through an unguarded call) is stored and exported, tagged, but feeds no metrics,
+        # baselines, anomaly detection or kill policies.
+        killed = self._kill_switch.is_killed(event.agent, event.session_id)
+        if killed and AFTER_KILL not in event.tags:
+            event = dataclasses.replace(event, tags=[*event.tags, AFTER_KILL])
 
         # 2. Filter by agent track config
         if not self._should_track(event):
             return
 
         # 3. Append to EventStore, then hand to exporters (never fatal)
-        self._event_store.write(event)
-        for exporter in self._exporters:
-            try:
-                exporter.export_event(event)
-            except Exception as exc:  # noqa: BLE001 - an exporter must not break recording
-                warnings.warn(
-                    f"agent-monitor exporter {type(exporter).__name__} failed: {exc}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+        self._store_and_export(event)
+        if killed:
+            return
 
         # 4. Ingest into MetricsEngine
         self._metrics.ingest(event)
@@ -152,6 +153,18 @@ class Monitor:
         for policy_name in triggered_policies:
             reason = f"Kill policy '{policy_name}' triggered for agent '{event.agent}'"
             self._alerts.dispatch_kill(event.agent, reason)
+
+    def _store_and_export(self, event: AgentEvent) -> None:
+        self._event_store.write(event)
+        for exporter in self._exporters:
+            try:
+                exporter.export_event(event)
+            except Exception as exc:  # noqa: BLE001 - an exporter must not break recording
+                warnings.warn(
+                    f"agent-monitor exporter {type(exporter).__name__} failed: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
     def _should_track(self, event: AgentEvent) -> bool:
         """Check if an event should be tracked based on agent config."""

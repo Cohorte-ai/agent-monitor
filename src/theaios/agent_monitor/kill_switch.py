@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -39,21 +40,63 @@ class KillSwitch:
         self._config = config
         self._state = KillState()
         self._state_path = Path(config.state_path)
+        self._seen: tuple[int, int] | None = None  # (inode, mtime_ns) of the state we loaded
+        self._lock = threading.Lock()
+        self._sync()
+
+    # Persistence: every kill or revive is saved at once, and is_killed() picks up a kill
+    # made by another process (the CLI, another worker) as soon as the file changes.
+
+    def _signature(self) -> tuple[int, int] | None:
+        try:
+            st = self._state_path.stat()
+        except OSError:
+            return None
+        return (st.st_ino, st.st_mtime_ns)
+
+    def _sync(self) -> None:
+        """Reload the state if the file changed since we last read or wrote it."""
+        sig = self._signature()
+        if sig is not None and sig != self._seen:
+            self.load()
+            self._seen = sig
+
+    def _changed(self) -> None:
+        self.save()
+        self._seen = self._signature()
 
     def kill_agent(self, agent: str, reason: str = "") -> None:
         """Kill a specific agent."""
+        with self._lock:
+            self._sync()
+            self._kill_agent(agent, reason)
+            self._changed()
+
+    def _kill_agent(self, agent: str, reason: str) -> None:
         self._state.killed_agents.add(agent)
         if reason:
             self._state.reasons[f"agent:{agent}"] = reason
 
     def kill_session(self, session_id: str, reason: str = "") -> None:
         """Kill a specific session."""
+        with self._lock:
+            self._sync()
+            self._kill_session(session_id, reason)
+            self._changed()
+
+    def _kill_session(self, session_id: str, reason: str) -> None:
         self._state.killed_sessions.add(session_id)
         if reason:
             self._state.reasons[f"session:{session_id}"] = reason
 
     def kill_global(self, reason: str = "") -> None:
         """Activate global kill — stops all agents."""
+        with self._lock:
+            self._sync()
+            self._kill_global(reason)
+            self._changed()
+
+    def _kill_global(self, reason: str) -> None:
         self._state.global_kill = True
         if reason:
             self._state.reasons["global"] = reason
@@ -73,6 +116,7 @@ class KillSwitch:
         bool
             True if any kill applies (global, agent, or session).
         """
+        self._sync()  # a kill made elsewhere (the CLI, another process) applies at once
         if self._state.global_kill:
             return True
         if agent in self._state.killed_agents:
@@ -91,6 +135,12 @@ class KillSwitch:
         session_id : str, optional
             Session to revive. Removes from killed set.
         """
+        with self._lock:
+            self._sync()
+            self._revive(agent, session_id)
+            self._changed()
+
+    def _revive(self, agent: str | None, session_id: str | None) -> None:
         if agent:
             self._state.killed_agents.discard(agent)
             self._state.reasons.pop(f"agent:{agent}", None)
@@ -100,6 +150,12 @@ class KillSwitch:
 
     def revive_global(self) -> None:
         """Deactivate global kill switch."""
+        with self._lock:
+            self._sync()
+            self._revive_global()
+            self._changed()
+
+    def _revive_global(self) -> None:
         self._state.global_kill = False
         self._state.reasons.pop("global", None)
 

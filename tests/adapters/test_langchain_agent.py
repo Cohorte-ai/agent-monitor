@@ -184,3 +184,64 @@ def test_the_async_path_records_too(basic_config: MonitorConfig) -> None:
     )
     asyncio.run(agent.ainvoke({"messages": [("user", "x")]}, CFG))
     assert _events(monitor) == [("action", "read_docs"), ("denial", "send_email")]
+
+
+# --- Round 1 findings (usability test of 0f23133) ----------------------------------------------
+
+
+def test_a_sub_agent_stops_when_its_parent_is_killed(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+    monitor.kill_agent("assistant", "operator")
+    model = Model(messages=iter([_call("read_docs", "c1"), AIMessage(content="done")]))
+    sub = create_agent(
+        model,
+        [read_docs],
+        name="researcher",
+        checkpointer=InMemorySaver(),
+        middleware=[MonitorMiddleware(monitor, delegated_by="assistant")],
+    )
+    with pytest.raises(AgentKilled):
+        sub.invoke({"messages": [("user", "x")]}, CFG)
+    assert RAN == []
+
+
+def test_a_sub_agent_without_delegated_by_is_refused(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+    model = Model(messages=iter([_call("read_docs", "c1"), AIMessage(content="done")]))
+    sub = create_agent(
+        model,
+        [read_docs],
+        name="researcher",
+        checkpointer=InMemorySaver(),
+        middleware=[MonitorMiddleware(monitor)],
+    )
+    cfg = {"configurable": {"thread_id": "t1", "ls_agent_type": "subagent"}}
+    with pytest.raises(ValueError, match="delegated_by"):
+        sub.invoke({"messages": [("user", "x")]}, cfg)
+    assert RAN == []
+
+
+def test_one_approval_request_per_proposal(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+    agent = _agent(monitor, [_call("send_email", "c1", to="x")], AskFirst())
+    agent.invoke({"messages": [("user", "x")]}, CFG, version="v2")
+    again = _agent(monitor, [_call("send_email", "c9", to="x")], AskFirst())  # same proposal id
+    again.invoke({"messages": [("user", "x")]}, {"configurable": {"thread_id": "t2"}}, version="v2")
+    assert [e for e in _events(monitor) if e[0] == "approval_request"] == [
+        ("approval_request", "send_email")
+    ]
+
+
+def test_model_chosen_names_are_capped(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+    agent = _agent(
+        monitor,
+        [
+            AIMessage(
+                content="", tool_calls=[{"name": "x" * 300_000, "args": {}, "id": "i" * 300_000}]
+            )
+        ],
+    )
+    agent.invoke({"messages": [("user", "x")]}, CFG)
+    event: Any = monitor.get_events()[0]
+    assert len(event["data"]["tool"]) <= 200 and len(event["data"]["tool_call_id"]) <= 200

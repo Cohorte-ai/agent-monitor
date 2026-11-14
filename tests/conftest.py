@@ -16,6 +16,12 @@ from theaios.agent_monitor.types import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default paths (kill state, events) are relative: keep every test out of the repo."""
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture()
 def tmp_dir(tmp_path: Path) -> Path:
     return tmp_path

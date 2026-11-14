@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **LiteLLM logger** (`theaios.agent_monitor.adapters.litellm_logger.MonitorLogger`, extra `litellm`): a `cost` event per completed call (LiteLLM's cost, model, tokens, latency) and an `error` event per failed call, for the agent and session in the call's metadata; refuses async calls of a killed agent or session; `guard()` for sync calls.
 - `Monitor.add_exporter(exporter)`: every recorded event is also sent to `exporter.export_event(event)`; a failing exporter warns and never stops recording.
 - `AgentKilled` exception.
+- `MonitorMiddleware(delegated_by=)`: a sub-agent also stops when its parent is killed; a Deep Agents sub-agent without it raises.
+
+### Changed
+
+- **Kill state persists and is shared.** Every kill and revive is saved to `kill_switch.state_path` and loaded at start; a running monitor picks up a kill made by another process (the CLI's `agent-monitor kill`, another worker) when the file changes. Before, nothing was saved or loaded: killed agents came back after a restart, and the CLI's kill never reached a running agent.
+- **Events of a killed agent are recorded, tagged `after_kill`**, instead of dropped (an action already running when the kill hit, spend through an unguarded LiteLLM call); they feed no metrics, baselines, anomaly detection or kill policies.
+- One `approval_request` event per proposal (a resumed sibling or the parent of a pausing sub-agent recorded it again); model-chosen tool names and call ids are capped at 200 characters, OpenTelemetry string attributes at 2,000.
 
 ### Fixed
 

@@ -17,7 +17,10 @@ Agent = ``agent=`` or the graph's name; session = the LangGraph ``thread_id``; u
 
 from __future__ import annotations
 
+import threading
 import time
+import weakref
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -59,13 +62,17 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
         *,
         agent: str | None = None,
         user: Callable[[Any], str | None] | None = None,
+        delegated_by: str | None = None,
     ) -> None:
         super().__init__()
         if not isinstance(monitor, Monitor):
             raise TypeError("MonitorMiddleware needs a Monitor")
+        if delegated_by is not None and not (isinstance(delegated_by, str) and delegated_by):
+            raise ValueError("delegated_by must be the parent agent's name")
         self._monitor = monitor
         self._agent = agent
         self._user = user
+        self._parent = delegated_by
 
     # Kill switch before every model call -------------------------------------------------
 
@@ -122,8 +129,18 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
     def _check_alive(self, config: Mapping[str, Any], runtime: Any) -> None:  # noqa: ANN401
         agent = self._agent or _agent_name(config)
         session = _thread(config)
-        if self._monitor.is_killed(agent, session):
-            raise AgentKilled(agent, session)
+        if (
+            self._parent is None
+            and (config.get("configurable") or {}).get("ls_agent_type") == "subagent"
+        ):
+            # A sub-agent must stop when the agent that handed it the work is killed.
+            raise ValueError(
+                f"'{agent}' runs as a sub-agent: give its MonitorMiddleware "
+                "delegated_by='<parent agent>' so killing the parent stops it too"
+            )
+        for who in (agent, self._parent):
+            if who is not None and self._monitor.is_killed(who, session):
+                raise AgentKilled(who, session)
 
     def _who(self, request: ToolCallRequest) -> tuple[str, str | None, str | None]:
         config = _config(request.runtime)
@@ -170,6 +187,9 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
         asks = [i.value for i in (pause.args[0] if pause.args else []) if hasattr(i, "value")]
         ask = asks[0] if asks and isinstance(asks[0], Mapping) else {}
         data = {k: ask.get(k) for k in ("component", "proposal_id", "tier") if ask.get(k)}
+        proposal = data.get("proposal_id")
+        if isinstance(proposal, str) and not _first_ask(self._monitor, proposal):
+            return  # the same pause seen again (a resumed sibling, the parent of a sub-agent)
         self._record(request, who, "approval_request", None, data)
 
     def _record(
@@ -187,8 +207,8 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
                 agent=agent,
                 event_type=event_type,
                 data={
-                    "tool": str(request.tool_call["name"]),
-                    "tool_call_id": str(request.tool_call.get("id") or ""),
+                    "tool": _cap(request.tool_call["name"]),
+                    "tool_call_id": _cap(request.tool_call.get("id") or ""),
                     **data,
                 },
                 session_id=session,
@@ -196,6 +216,29 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
                 latency_ms=(time.perf_counter() - start) * 1000 if start is not None else None,
             )
         )
+
+
+MAX_NAME = 200  # the model chooses tool names and call ids: cap what we store and export
+_ASKS_KEPT = 10_000
+_seen_asks: weakref.WeakKeyDictionary[Monitor, OrderedDict[str, None]] = weakref.WeakKeyDictionary()
+_asks_lock = threading.Lock()
+
+
+def _cap(value: object) -> str:
+    text = str(value)
+    return text if len(text) <= MAX_NAME else text[: MAX_NAME - 1] + "…"
+
+
+def _first_ask(monitor: Monitor, proposal_id: str) -> bool:
+    """True the first time this monitor sees a pause for this proposal."""
+    with _asks_lock:
+        seen = _seen_asks.setdefault(monitor, OrderedDict())
+        if proposal_id in seen:
+            return False
+        seen[proposal_id] = None
+        while len(seen) > _ASKS_KEPT:
+            seen.popitem(last=False)
+        return True
 
 
 def _config(runtime: Any) -> Mapping[str, Any]:  # noqa: ANN401

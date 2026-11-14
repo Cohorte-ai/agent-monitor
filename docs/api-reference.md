@@ -331,6 +331,7 @@ class AnomalyAlert:
 | Exception | Module | When |
 |-----------|--------|------|
 | `ConfigError` | `theaios.agent_monitor.config` | Config file is invalid |
+| `AgentKilled` | `theaios.agent_monitor` | A killed agent or session asked for a model call, a tool call or an LLM request (raised by the adapters) |
 
 ---
 

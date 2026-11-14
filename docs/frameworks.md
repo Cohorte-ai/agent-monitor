@@ -20,20 +20,34 @@ agent = create_agent(model, tools, name="assistant", context_schema=Ctx, checkpo
 Put it **first** (the outermost), so it sees what the middlewares inside it decide.
 
 - **Kill switch**: before every model call and every tool call, a killed agent or session
-  stops the run: `AgentKilled` is raised (`monitor.kill_agent("assistant")`,
-  `monitor.kill_session(thread_id)`, `monitor.kill_global()`).
+  stops the run: `AgentKilled` is raised (`from theaios.agent_monitor import AgentKilled`;
+  kill with `monitor.kill_agent("assistant")`, `monitor.kill_session(thread_id)`,
+  `monitor.kill_global()`, or `agent-monitor kill` from the CLI).
 - **Events**, one per tool call: `action` (it ran), `denial` (an inner middleware refused it:
   agent-auth, guardrails; the event carries its component, codes and reason), `error` (the tool
-  failed), and `approval_request` once when the run pauses for a person. Model calls are not
-  events (their cost comes from LiteLLM, below).
+  failed), and `approval_request` once per proposal when the run pauses for a person. Model
+  calls are not events (their cost comes from LiteLLM, below). Tool names and call ids, which
+  the model chooses, are capped at 200 characters.
+- A `denial` is any error result carrying `artifact["theaios"]`, the marker the theaios
+  middlewares set. Your own tools should not set it.
 - Agent = `agent=` or the graph's name; session = the LangGraph `thread_id`; user = `user=` or
   `runtime.context.user_id`.
 
 Deep Agents does not pass the main agent's middleware to its sub-agents: add a
-`MonitorMiddleware` to each sub-agent's `middleware` (same monitor).
+`MonitorMiddleware` to each sub-agent's `middleware` (same monitor), with `delegated_by`, so
+killing the main agent also stops a sub-agent mid-task. A sub-agent's middleware without
+`delegated_by` raises. Deep Agents also adds a `general-purpose` sub-agent with all the main
+agent's tools: give it the middlewares too, or turn it off (see the guardrails and agent-auth
+guides).
 
-Events of a killed agent are not stored (the monitor drops them): the run stops, and the
-refusal is the `AgentKilled` exception your application catches.
+```python
+subagents = [{"name": "researcher", "description": "...", "tools": [search],
+              "middleware": [MonitorMiddleware(monitor, delegated_by="assistant"), ...]}]
+```
+
+What a killed agent still does (an action already running when the kill hit, spend through
+an unguarded LiteLLM call) is stored and exported tagged `after_kill`, and feeds no metrics,
+baselines, anomaly detection or kill policies.
 
 ## LiteLLM: cost per agent, kill switch
 

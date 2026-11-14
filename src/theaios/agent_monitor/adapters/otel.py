@@ -109,6 +109,7 @@ class OTelExporter:
 
 def _attr(value: object) -> str | int | float | bool:
     """An OpenTelemetry attribute value: scalars as is, the rest as JSON text."""
-    if isinstance(value, (str, bool, int, float)):
+    if isinstance(value, (bool, int, float)):
         return value
-    return json.dumps(value, default=str, sort_keys=True)[:2000]
+    text = value if isinstance(value, str) else json.dumps(value, default=str, sort_keys=True)
+    return text[:2000]

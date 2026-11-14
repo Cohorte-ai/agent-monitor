@@ -189,7 +189,7 @@ kill_switch:
   state_path: /var/lib/agent-monitor/kill_state.json
 ```
 
-When configured, the kill switch saves its state to disk after every kill/revive operation (via `save()`). On startup, call `load()` to restore saved state.
+Every kill and revive is saved to `state_path` at once (default `.agent_monitor/kill_state.json`), and a monitor loads it when it starts. A running monitor also picks up a kill made elsewhere (`agent-monitor kill <agent>` from the CLI, another worker) on its next check: the file is re-read when it changes. Before 0.2 nothing was saved or loaded, so killed agents came back after a restart and the CLI's `kill` did not reach running agents.
 
 This means:
 
@@ -229,7 +229,7 @@ print(state.reasons)          # {"agent:sales-agent": "Cost spike detected"}
 
 2. **Use agent-level kills, not global.** A misbehaving agent should not take down the entire system.
 
-3. **Enable persistence.** Without persistence, a restart clears all kill states -- the agent you just killed comes back alive.
+3. **Keep `state_path` on storage every worker can read.** Kills are persisted there; a worker that cannot read it does not see kills made elsewhere.
 
 4. **Log kill reasons.** The `reason` parameter is stored and exported in compliance reports. Future-you will thank past-you.
 
