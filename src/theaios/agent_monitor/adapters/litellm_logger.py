@@ -52,6 +52,9 @@ class MonitorLogger(CustomLogger):  # type: ignore[misc, unused-ignore]
         The agent for calls whose metadata names none. Default ``"unknown"``.
     agent_key, session_key : str
         Metadata keys for the agent and the session. Default ``"agent"``, ``"session_id"``.
+    parents_key : str
+        Metadata key for the agents above a sub-agent (a list, outermost first): killing any of
+        them refuses its calls too. Default ``"parents"``.
     """
 
     def __init__(
@@ -61,6 +64,7 @@ class MonitorLogger(CustomLogger):  # type: ignore[misc, unused-ignore]
         default_agent: str = "unknown",
         agent_key: str = "agent",
         session_key: str = "session_id",
+        parents_key: str = "parents",
     ) -> None:
         super().__init__()
         if not isinstance(monitor, Monitor):
@@ -69,6 +73,7 @@ class MonitorLogger(CustomLogger):  # type: ignore[misc, unused-ignore]
         self._default_agent = default_agent
         self._agent_key = agent_key
         self._session_key = session_key
+        self._parents_key = parents_key
 
     # LiteLLM calls these with keyword arguments: the parameter names must stay exactly so.
 
@@ -96,18 +101,14 @@ class MonitorLogger(CustomLogger):  # type: ignore[misc, unused-ignore]
         self, kwargs: dict[str, Any], call_type: Any
     ) -> dict[str, Any] | None:  # noqa: ANN401
         """Called by LiteLLM before every async call: refuse a killed agent or session."""
-        agent, session = self._who(kwargs)
-        if self._monitor.is_killed(agent, session):
-            raise AgentKilled(agent, session)
+        self._check_alive(kwargs)
         return None
 
     def guard(self, fn: Callable[..., T]) -> Callable[..., T]:
         """Wrap a sync LiteLLM call (``litellm.completion``) with the kill switch."""
 
         def guarded(*args: Any, **kwargs: Any) -> T:  # noqa: ANN401
-            agent, session = self._who(kwargs)
-            if self._monitor.is_killed(agent, session):
-                raise AgentKilled(agent, session)
+            self._check_alive(kwargs)
             return fn(*args, **kwargs)
 
         guarded.__name__ = getattr(fn, "__name__", "guarded")
@@ -115,6 +116,14 @@ class MonitorLogger(CustomLogger):  # type: ignore[misc, unused-ignore]
         return guarded
 
     # ------------------------------------------------------------------------------------
+
+    def _check_alive(self, kwargs: Mapping[str, Any]) -> None:
+        agent, session = self._who(kwargs)
+        parents = self._metadata(kwargs).get(self._parents_key) or []
+        names = [str(p) for p in parents] if isinstance(parents, (list, tuple)) else [str(parents)]
+        for who in (agent, *names):
+            if self._monitor.is_killed(who, session):
+                raise AgentKilled(who, session)
 
     def _metadata(self, kwargs: Mapping[str, Any]) -> Mapping[str, Any]:
         params = kwargs.get("litellm_params")

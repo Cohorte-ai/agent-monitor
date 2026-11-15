@@ -67,6 +67,9 @@ litellm.completion(model="gpt-4.1-mini", messages=messages,
                    metadata={"agent": "assistant", "session_id": thread_id}, user="alice")
 ```
 
+- For a sub-agent's calls, put the agents above it in the metadata, outermost first
+  (`metadata={"agent": "helper", "parents": ["assistant", "researcher"]}`): killing any of them
+  refuses the call too.
 - Every completed call is a `cost` event (LiteLLM's computed cost in USD, model, tokens,
   latency); a failed call is an `error` event. Agent and session come from the call's
   `metadata` (keys configurable), the user from `user=`.

@@ -190,7 +190,9 @@ kill_switch:
 ```
 
 Every kill and revive is saved to `state_path` at once (default `.agent_monitor/kill_state.json`; a relative path is relative to the config file, so the CLI run from any directory reaches the same state), and a monitor loads it when it starts. A running monitor also picks up a kill made elsewhere (`agent-monitor kill <agent>` from the CLI, another worker) on its next check: the file is re-read when it changes. Kills and revives hold a file lock while
-they read and rewrite it, so two processes acting at the same moment never lose one (POSIX). Before 0.2 nothing was saved or loaded, so killed agents came back after a restart and the CLI's `kill` did not reach running agents.
+they read and rewrite it, so two processes acting at the same moment never lose one (POSIX). On
+Windows there is no lock: writes are atomic, but two writers at the same instant can lose one
+update; act on kills from one place there. Before 0.2 nothing was saved or loaded, so killed agents came back after a restart and the CLI's `kill` did not reach running agents.
 
 This means:
 

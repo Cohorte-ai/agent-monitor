@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
+
 from theaios.agent_monitor.kill_switch import KillSwitch
 from theaios.agent_monitor.types import (
     KillPolicyConfig,
@@ -246,3 +248,26 @@ def test_concurrent_writers_never_lose_a_kill(tmp_path: Path) -> None:
             w.join()
     fresh = KillSwitch(KillSwitchConfig(state_path=path))
     assert all(fresh.is_killed(f"a{i}") for i in range(30))
+
+
+def test_the_cli_never_overwrites_a_kill_made_meanwhile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from theaios.agent_monitor.cli import main
+
+    conf = tmp_path / "monitor.yaml"
+    conf.write_text('version: "1.0"\nkill_switch:\n  state_path: kill.json\n')
+    original = KillSwitch.kill_agent
+
+    def kill_then_someone_else_kills(self: KillSwitch, agent: str, reason: str = "") -> None:
+        original(self, agent, reason)
+        if agent == "A":  # another process kills B right after the CLI's locked write
+            original(KillSwitch(KillSwitchConfig(state_path=str(tmp_path / "kill.json"))), "B")
+
+    monkeypatch.setattr(KillSwitch, "kill_agent", kill_then_someone_else_kills)
+    result = CliRunner().invoke(main, ["-c", str(conf), "kill", "A"])
+    assert result.exit_code == 0, result.output
+    fresh = KillSwitch(KillSwitchConfig(state_path=str(tmp_path / "kill.json")))
+    assert fresh.is_killed("A") and fresh.is_killed("B")

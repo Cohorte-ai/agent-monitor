@@ -214,8 +214,7 @@ def kill(
 
     from theaios.agent_monitor.kill_switch import KillSwitch
 
-    ks = KillSwitch(cfg.kill_switch)
-    ks.load()
+    ks = KillSwitch(cfg.kill_switch)  # loads the state; kills and revives save under a lock
 
     if global_kill:
         ks.kill_global(reason or f"Manual global kill at {time.time()}")
@@ -226,8 +225,6 @@ def kill(
     else:
         ks.kill_agent(target, reason or f"Manual agent kill: {target}")
         click.echo(f"Agent '{target}' killed.")
-
-    ks.save()
 
 
 @main.command()
@@ -251,8 +248,7 @@ def revive(
 
     from theaios.agent_monitor.kill_switch import KillSwitch
 
-    ks = KillSwitch(cfg.kill_switch)
-    ks.load()
+    ks = KillSwitch(cfg.kill_switch)  # loads the state; kills and revives save under a lock
 
     if global_revive:
         ks.revive_global()
@@ -263,8 +259,6 @@ def revive(
     else:
         ks.revive(agent=target)
         click.echo(f"Agent '{target}' revived.")
-
-    ks.save()
 
 
 @main.command(name="export")

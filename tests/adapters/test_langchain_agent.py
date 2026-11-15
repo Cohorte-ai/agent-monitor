@@ -346,3 +346,38 @@ def test_a_forged_denial_is_recorded_as_an_error(basic_config: MonitorConfig) ->
     monitor = Monitor(basic_config)
     _agent(monitor, [_call("read_docs", "c1")], Forged()).invoke({"messages": [("user", "x")]}, CFG)
     assert _events(monitor) == [("error", "read_docs")]
+
+
+# --- Round 3 findings (re-verification of d9ecbd7) ---------------------------------------------
+
+
+def test_a_tool_exception_with_model_chosen_text_is_capped(basic_config: MonitorConfig) -> None:
+    @tool
+    def fetch(url: str) -> str:
+        """Fetch."""
+        raise ValueError(f"invalid URL {url}")
+
+    monitor = Monitor(basic_config)
+    model = Model(
+        messages=iter([_call("fetch", "c1", url="u" * 300_000), AIMessage(content="done")])
+    )
+    agent = create_agent(
+        model,
+        [fetch],
+        middleware=[MonitorMiddleware(monitor)],
+        checkpointer=InMemorySaver(),
+        name="assistant",
+    )
+    with pytest.raises(ValueError):
+        agent.invoke({"messages": [("user", "x")]}, CFG)
+    event: Any = monitor.get_events()[0]
+    assert event["event_type"] == "error" and len(event["data"]["error"]) <= 1000
+
+
+def test_a_new_ask_reusing_a_call_id_is_recorded(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+    first = _agent(monitor, [_call("send_email", "c1", to="x")], AskFirst())
+    first.invoke({"messages": [("user", "x")]}, CFG, version="v2")
+    again = _agent(monitor, [_call("send_email", "c1", to="x")], AskFirst())  # same id, new run
+    again.invoke({"messages": [("user", "x")]}, {"configurable": {"thread_id": "t2"}}, version="v2")
+    assert len([e for e in _events(monitor) if e[0] == "approval_request"]) == 2

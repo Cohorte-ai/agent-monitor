@@ -111,3 +111,16 @@ def test_a_failed_call_is_an_error_event(logger: MonitorLogger) -> None:
     events = _wait(logger._monitor, 1)
     assert [e["event_type"] for e in events] == ["error"] and events[0]["agent"] == "assistant"
     assert events[0]["cost_usd"] is None and "slow down" in events[0]["data"]["error"]
+
+
+def test_a_killed_ancestor_refuses_a_sub_agents_calls(logger: MonitorLogger) -> None:
+    logger._monitor.kill_agent("assistant", "operator")
+    meta = {"agent": "helper", "parents": ["assistant", "researcher"]}
+    with pytest.raises(AgentKilled):
+        asyncio.run(
+            litellm.acompletion(model="gpt-4o-mini", messages=MSG, mock_response="x", metadata=meta)
+        )
+    with pytest.raises(AgentKilled):
+        logger.guard(litellm.completion)(
+            model="gpt-4o-mini", messages=MSG, mock_response="x", metadata=meta
+        )

@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Events of a killed agent are recorded, tagged `after_kill`**, instead of dropped (an action already running when the kill hit, spend through an unguarded LiteLLM call); they feed no metrics, baselines, anomaly detection or kill policies.
 - **Relative paths in a config file are relative to that file** (`storage.path`, `baselines.storage_path`, `kill_switch.state_path`, file alert channels), not to the current directory: the CLI's `kill` run from another directory wrote a different state file and never reached the service.
 - `delegated_by` takes the whole chain (`["assistant", "researcher"]`): killing the root stops a sub-agent of a sub-agent.
+- The CLI's `kill` and `revive` saved once more after the locked write, which could erase a kill made at the same moment by another process.
+- LiteLLM: a call's `parents` metadata (outermost first) is checked too, so killing a root agent refuses its sub-agents' LLM calls.
+- Tool exceptions are capped when recorded; approval requests are keyed on the LangGraph task of the asking call (a reused call id hid a new request).
 - Kill-state writes hold a file lock across read-modify-write: a kill made at the same moment as another process's write was lost.
 - Only refusals carrying the theaios mark (theaios-core 0.1.2) are recorded as denials; decision reasons are capped at 1,000 characters; LangGraph pauses that are not theaios approvals are not recorded as approval requests.
 - One `approval_request` event per proposal and asking call (a resumed sibling or the parent of a pausing sub-agent recorded it again); model-chosen tool names and call ids are capped at 200 characters, OpenTelemetry string attributes at 2,000.

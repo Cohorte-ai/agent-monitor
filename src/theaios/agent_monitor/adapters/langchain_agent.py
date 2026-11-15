@@ -106,7 +106,9 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
         except GraphBubbleUp:  # LangGraph control flow (e.g. a Command to the parent graph)
             raise
         except BaseException as exc:
-            self._record(request, who, "error", start, {"error": f"{type(exc).__name__}: {exc}"})
+            self._record(
+                request, who, "error", start, {"error": _cap_value(f"{type(exc).__name__}: {exc}")}
+            )
             raise
         self._record_result(request, who, start, result)
         return result
@@ -125,7 +127,9 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
         except GraphBubbleUp:  # LangGraph control flow (e.g. a Command to the parent graph)
             raise
         except BaseException as exc:
-            self._record(request, who, "error", start, {"error": f"{type(exc).__name__}: {exc}"})
+            self._record(
+                request, who, "error", start, {"error": _cap_value(f"{type(exc).__name__}: {exc}")}
+            )
             raise
         self._record_result(request, who, start, result)
         return result
@@ -199,7 +203,13 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
         }
         # One event per (proposal, the call that asked): the parent of a pausing sub-agent sees
         # the same ask; a new call asking again under a reused proposal is a new request.
-        asker = ask.get("tool_call_id") or request.tool_call.get("id")
+        # Keyed on the LangGraph task of the call that asked (the model chooses call ids).
+        info = getattr(request.runtime, "execution_info", None)
+        asker = (
+            getattr(info, "task_id", None) or ask.get("tool_call_id") or request.tool_call.get("id")
+        )
+        if ask.get("tool_call_id") and ask.get("tool_call_id") != request.tool_call.get("id"):
+            asker = ask.get("tool_call_id")  # the ask bubbled up from a sub-agent: its own call
         key = f"{ask.get('proposal_id')}|{asker}"
         if not _first_ask(self._monitor, key):
             return  # the same pause seen again (a resumed sibling, the parent of a sub-agent)
