@@ -381,3 +381,46 @@ def test_a_new_ask_reusing_a_call_id_is_recorded(basic_config: MonitorConfig) ->
     again = _agent(monitor, [_call("send_email", "c1", to="x")], AskFirst())  # same id, new run
     again.invoke({"messages": [("user", "x")]}, {"configurable": {"thread_id": "t2"}}, version="v2")
     assert len([e for e in _events(monitor) if e[0] == "approval_request"]) == 2
+
+
+def test_a_sub_agents_ask_is_recorded_once(basic_config: MonitorConfig) -> None:
+    monitor = Monitor(basic_config)
+
+    class Ask(AgentMiddleware):  # a guardrails-like ask carrying the asker's task
+        def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+            info = request.runtime.execution_info
+            interrupt(
+                {
+                    "type": "theaios.approval",
+                    "component": "guardrails",
+                    "proposal_id": "p9",
+                    "tool_call_id": request.tool_call["id"],
+                    "task": f"task:{info.task_id}",
+                }
+            )
+            return handler(request)
+
+    sub_model = Model(messages=iter([_call("send_email", "c1", to="x"), AIMessage(content="ok")]))
+    sub = create_agent(
+        sub_model,
+        [send_email],
+        name="researcher",
+        middleware=[MonitorMiddleware(monitor, delegated_by="assistant"), Ask()],
+    )
+
+    @tool
+    def task(description: str) -> str:
+        """Hand work to the researcher."""
+        return str(sub.invoke({"messages": [("user", description)]})["messages"][-1].content)
+
+    model = Model(messages=iter([_call("task", "k1", description="go"), AIMessage(content="done")]))
+    parent = create_agent(
+        model,
+        [task],
+        name="assistant",
+        checkpointer=InMemorySaver(),
+        middleware=[MonitorMiddleware(monitor)],
+    )
+    parent.invoke({"messages": [("user", "x")]}, CFG, version="v2")
+    asks = [e for e in _events(monitor) if e[0] == "approval_request"]
+    assert asks == [("approval_request", "send_email")]

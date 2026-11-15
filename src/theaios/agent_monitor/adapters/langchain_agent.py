@@ -203,13 +203,16 @@ class MonitorMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ignor
         }
         # One event per (proposal, the call that asked): the parent of a pausing sub-agent sees
         # the same ask; a new call asking again under a reused proposal is a new request.
-        # Keyed on the LangGraph task of the call that asked (the model chooses call ids).
+        # One event per ask: keyed on what the asking middleware put in the payload (its
+        # LangGraph task), so the parent of a pausing sub-agent, which sees the same payload,
+        # does not record it again, and a new run asking under a reused proposal does.
         info = getattr(request.runtime, "execution_info", None)
         asker = (
-            getattr(info, "task_id", None) or ask.get("tool_call_id") or request.tool_call.get("id")
+            ask.get("task")
+            or getattr(info, "task_id", None)
+            or ask.get("tool_call_id")
+            or request.tool_call.get("id")
         )
-        if ask.get("tool_call_id") and ask.get("tool_call_id") != request.tool_call.get("id"):
-            asker = ask.get("tool_call_id")  # the ask bubbled up from a sub-agent: its own call
         key = f"{ask.get('proposal_id')}|{asker}"
         if not _first_ask(self._monitor, key):
             return  # the same pause seen again (a resumed sibling, the parent of a sub-agent)
