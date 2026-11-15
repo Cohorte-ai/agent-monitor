@@ -42,7 +42,7 @@ On construction, the monitor initializes:
 
 Record an agent event through the full monitoring pipeline. Returns `None` (not a boolean).
 
-When the agent is killed, the event is silently dropped.
+When the agent or session is killed, the event is stored and exported tagged `after_kill`, and feeds no metrics, baselines, anomaly detection or kill policies.
 
 ```python
 import time
@@ -331,6 +331,7 @@ class AnomalyAlert:
 | Exception | Module | When |
 |-----------|--------|------|
 | `ConfigError` | `theaios.agent_monitor.config` | Config file is invalid |
+| `AgentKilled` | `theaios.agent_monitor` | A killed agent or session asked for a model call, a tool call or an LLM request (raised by the adapters) |
 
 ---
 

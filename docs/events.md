@@ -89,7 +89,7 @@ monitor.record(AgentEvent(
 
 `monitor.record()` returns `None`. It does not return a boolean.
 
-When an agent is killed, the event is silently dropped -- not stored, not processed. To check whether an agent is killed before recording, use `monitor.is_killed(agent)`.
+When an agent or session is killed, the event is still stored, tagged `after_kill`, but it feeds no metrics, baselines, anomaly detection or kill policies. To check whether an agent is killed, use `monitor.is_killed(agent)`.
 
 ---
 

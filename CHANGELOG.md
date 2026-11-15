@@ -5,6 +5,34 @@ All notable changes to theaios-agent-monitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-15
+
+### Added
+
+- **LangChain 1.x / Deep Agents middleware** (`theaios.agent_monitor.adapters.langchain_agent.MonitorMiddleware`, extra `langchain-agent`): the kill switch stops the run before every model call and tool call (`AgentKilled`); every tool call becomes an `action`, `denial` (with the inner middleware's decision), `error` or `approval_request` event, with agent, session (`thread_id`), user and latency.
+- **LiteLLM logger** (`theaios.agent_monitor.adapters.litellm_logger.MonitorLogger`, extra `litellm`): a `cost` event per completed call (LiteLLM's cost, model, tokens, latency) and an `error` event per failed call, for the agent and session in the call's metadata; refuses async calls of a killed agent or session; `guard()` for sync calls.
+- `Monitor.add_exporter(exporter)`: every recorded event is also sent to `exporter.export_event(event)`; a failing exporter warns and never stops recording.
+- `AgentKilled` exception.
+- `MonitorMiddleware(delegated_by=)`: a sub-agent also stops when its parent is killed; a Deep Agents sub-agent without it raises.
+
+### Changed
+
+- **Kill state persists and is shared.** Every kill and revive is saved to `kill_switch.state_path` and loaded at start; a running monitor picks up a kill made by another process (the CLI's `agent-monitor kill`, another worker) when the file changes. Before, nothing was saved or loaded: killed agents came back after a restart, and the CLI's kill never reached a running agent.
+- **Events of a killed agent are recorded, tagged `after_kill`**, instead of dropped (an action already running when the kill hit, spend through an unguarded LiteLLM call); they feed no metrics, baselines, anomaly detection or kill policies.
+- **Relative paths in a config file are relative to that file** (`storage.path`, `baselines.storage_path`, `kill_switch.state_path`, file alert channels), not to the current directory: the CLI's `kill` run from another directory wrote a different state file and never reached the service.
+- `delegated_by` takes the whole chain (`["assistant", "researcher"]`): killing the root stops a sub-agent of a sub-agent.
+- The CLI's `kill` and `revive` saved once more after the locked write, which could erase a kill made at the same moment by another process.
+- LiteLLM: a call's `parents` metadata (outermost first) is checked too, so killing a root agent refuses its sub-agents' LLM calls.
+- Tool exceptions are capped when recorded; approval requests are keyed on the LangGraph task of the asking call (a reused call id hid a new request).
+- Kill-state writes hold a file lock across read-modify-write: a kill made at the same moment as another process's write was lost.
+- Only refusals carrying the theaios mark (theaios-core 0.1.2) are recorded as denials; decision reasons are capped at 1,000 characters; LangGraph pauses that are not theaios approvals are not recorded as approval requests.
+- One `approval_request` event per proposal and asking call (a resumed sibling or the parent of a pausing sub-agent recorded it again); model-chosen tool names and call ids are capped at 200 characters, OpenTelemetry string attributes at 2,000.
+
+### Fixed
+
+- `OTelExporter` replaced the application's global tracer provider with an empty one of its own (no span processor), so it exported nothing and broke any other OpenTelemetry use in the process. It now uses the provider you pass, or the global one, and never sets it. Spans carry Langfuse observation attributes, `user.id` and `session.id`.
+- The integration guide documented `OTelExporter(endpoint=...)`, `monitor.add_exporter()` and OTel metrics, none of which existed. It now documents the real API, and how to send events to Langfuse.
+
 ## [0.1.3] - 2026-11-09
 
 ### Changed
